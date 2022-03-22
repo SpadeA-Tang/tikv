@@ -262,7 +262,7 @@ fn test_rawkv_ttl() {
 
 #[test]
 fn test_mvcc_basic() {
-    let (_cluster, client, ctx) = must_new_cluster_and_kv_client();
+    let (_cluster, client, ctx) = must_new_cluster_and_kv_client_mul(3);
     let (k, v) = (b"key".to_vec(), b"value".to_vec());
 
     let mut ts = 0;

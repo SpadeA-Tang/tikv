@@ -155,7 +155,26 @@ pub fn run_tikv(config: TiKvConfig) {
     if !config.raft_engine.enable {
         run_impl!(RocksEngine)
     } else {
-        run_impl!(RaftLogEngine)
+        let mut tikv = TiKVServer::<RaftLogEngine>::init(config);
+        let memory_limit = tikv.config.memory_usage_limit.unwrap().0;
+        let high_water = (tikv.config.memory_usage_high_water*memory_limit as f64)as u64;
+        register_memory_usage_high_water(high_water);
+        tikv.check_conflict_addr();
+        tikv.init_fs();
+        tikv.init_yatp();
+        tikv.init_encryption();
+        let fetcher = tikv.init_io_utility();
+        let listener = tikv.init_flow_receiver();
+        let(engines,engines_info) = tikv.init_raw_engines(listener);
+        tikv.init_engines(engines.clone());
+        let server_config = tikv.init_servers();
+        tikv.register_services();
+        tikv.init_metrics_flusher(fetcher,engines_info);
+        tikv.init_storage_stats_task(engines);
+        tikv.run_server(server_config);
+        tikv.run_status_server();
+        signal_handler::wait_for_signal(Some(tikv.engines.take().unwrap().engines));
+        tikv.stop();
     }
 }
 
@@ -1418,6 +1437,8 @@ impl TiKVServer<RaftLogEngine> {
             Some(&self.region_info_accessor),
             self.config.storage.api_version(),
         );
+
+        // 创建kv_engine
         let db_path = self.store_path.join(Path::new(DEFAULT_ROCKSDB_SUB_DIR));
         let kv_engine = engine_rocks::raw_util::new_engine_opt(
             db_path.to_str().unwrap(),
@@ -1426,6 +1447,7 @@ impl TiKVServer<RaftLogEngine> {
         )
         .unwrap_or_else(|s| fatal!("failed to create kv engine: {}", s));
 
+        // 将kv_engine封装成RocksEngine (也就增加了cache)
         let mut kv_engine = RocksEngine::from_db(Arc::new(kv_engine));
         let shared_block_cache = block_cache.is_some();
         kv_engine.set_shared_block_cache(shared_block_cache);
@@ -1489,8 +1511,10 @@ fn check_system_config(config: &TiKvConfig) {
         // open files here
         rocksdb_max_open_files *= 2;
     }
+    rocksdb_max_open_files = 4000;
     if let Err(e) = tikv_util::config::check_max_open_fds(
-        RESERVED_OPEN_FDS + (rocksdb_max_open_files + config.raftdb.max_open_files) as u64,
+        // RESERVED_OPEN_FDS + (rocksdb_max_open_files + config.raftdb.max_open_files) as u64,
+        rocksdb_max_open_files as u64,
     ) {
         fatal!("{}", e);
     }
