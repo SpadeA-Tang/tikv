@@ -638,21 +638,6 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
         self.release_lock(&tctx.lock, cid);
     }
 
-    // /// Event handler for the success of write.
-    // fn on_write_finished_release_latch(
-    //     &self,
-    //     cid: u64,
-    //     lock_guards: Vec<KeyHandleGuard>,
-    //     pipelined: bool,
-    //     async_apply_prewrite: bool,
-    //     tag: metrics::CommandKind,
-    //     txtc_lock: Lock,
-    // ) {
-    //     // TODO: Does async apply prewrite worth a special metric here?
-        
-    //     self.release_lock(&txtc_lock, cid);
-    // }
-
     /// Event handler for the request of waiting for lock
     fn on_wait_for_lock(
         &self,
@@ -1033,6 +1018,8 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
                 }
             }
 
+            fail_point!("scheduler_async_write_finish");
+
             if pipelined {
                 SCHED_STAGE_COUNTER_VEC
                     .get(tag)
@@ -1068,7 +1055,9 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             // `tctx.cb(tctx.pr)`.
             if let Some(cb) = task_cb {
                 let pr = match result {
-                    Ok(()) => pr.or(task_pr).unwrap(),
+                    // 前面的 proposed_cb/apply_cb 分支中将pr的值通过self.inner.store_pr存到了task_queue中
+                    // 这种情况下，pr将为空，这时需要获取task_queue中的该分量。不过如果不是这种情况，那么上面的task_pr应该为空
+                    Ok(()) => pr.or(task_pr).unwrap(),  
                     Err(e) => ProcessResult::Failed {
                         err: StorageError::from(e),
                     },
@@ -1082,11 +1071,8 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             } else {
                 assert!(pipelined || is_async_apply_prewrite);
             }
-
             sched_pool
                 .spawn(async move {
-                    fail_point!("scheduler_async_write_finish");
-
                     self.release_lock(&task_lock, cid);
 
                     KV_COMMAND_KEYWRITE_HISTOGRAM_VEC

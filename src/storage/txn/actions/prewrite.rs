@@ -85,7 +85,7 @@ pub fn prewrite<S: Snapshot>(
     // Assertion level will be checked within the `check_assertion` function.
     if !lock_amended {
         let (reloaded_prev_write, reloaded) =
-            mutation.check_assertion(reader, &prev_write, prev_write_loaded)?;
+            mutation.check_assertion(reader, &prev_write, prev_write_loaded)?; // todo: 作用是什么
         if reloaded {
             prev_write = reloaded_prev_write;
             prev_write_loaded = true;
