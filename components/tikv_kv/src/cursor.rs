@@ -97,6 +97,8 @@ impl<I: Iterator> Cursor<I> {
             return Ok(true);
         }
 
+        // false 代表key不在iter的范围内
+        // internal_seek调用 seek，而seek只要找到第一个大于等于key的就返回true (必须是valid)
         if !self.internal_seek(key, statistics)? {
             // Do not set `max_key` when prefix seek enabled.
             // `max_key` is used to record the last key before the iter reaches
