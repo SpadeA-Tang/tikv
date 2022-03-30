@@ -60,6 +60,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for TxnHeartBeat {
         ));
 
         let lock = match reader.load_lock(&self.primary_key)? {
+            // 更新ttl（即更改lock信息）
             Some(mut lock) if lock.ts == self.start_ts => {
                 if lock.ttl < self.advise_ttl {
                     lock.ttl = self.advise_ttl;
@@ -68,6 +69,7 @@ impl<S: Snapshot, L: LockManager> WriteCommand<S, L> for TxnHeartBeat {
                 lock
             }
             _ => {
+                // load不到primary key，说明txn不存在了
                 return Err(MvccError::from(MvccErrorInner::TxnNotFound {
                     start_ts: self.start_ts,
                     key: self.primary_key.into_raw()?,

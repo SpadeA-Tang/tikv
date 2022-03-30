@@ -1093,7 +1093,7 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
         // Safety: `self.sched_pool` ensures a TLS engine exists.
         unsafe {
             with_tls_engine(|engine: &E| {
-                if let Err(e) =
+                if let Err(e) =   // todo: 是不是对锁的修改都会走到这？  这样的话，把
                     engine.async_write_ext(&ctx, to_be_write, engine_cb, proposed_cb, committed_cb)
                 {
                     SCHED_STAGE_COUNTER_VEC.get(tag).async_write_err.inc();

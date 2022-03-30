@@ -155,7 +155,11 @@ pub fn run_tikv(config: TiKvConfig) {
     if !config.raft_engine.enable {
         run_impl!(RocksEngine)
     } else {
+
+        // 创建并启动gRPC server，连接到pd，创建raft batch system（router, system），
+        // 创建background_worker用来处理addr resolve
         let mut tikv = TiKVServer::<RaftLogEngine>::init(config);
+
         let memory_limit = tikv.config.memory_usage_limit.unwrap().0;
         let high_water = (tikv.config.memory_usage_high_water*memory_limit as f64)as u64;
         register_memory_usage_high_water(high_water);
@@ -165,6 +169,7 @@ pub fn run_tikv(config: TiKvConfig) {
         tikv.init_encryption();
         let fetcher = tikv.init_io_utility();
         let listener = tikv.init_flow_receiver();
+        
         let(engines,engines_info) = tikv.init_raw_engines(listener);
         tikv.init_engines(engines.clone());
         let server_config = tikv.init_servers();
@@ -231,9 +236,9 @@ struct Servers<EK: KvEngine, ER: RaftEngine> {
 type LocalServer<EK, ER> =
     Server<RaftRouter<EK, ER>, resolve::PdStoreAddrResolver, LocalRaftKv<EK, ER>>;
 type LocalRaftKv<EK, ER> = RaftKv<EK, ServerRaftStoreRouter<EK, ER>>;
-
 impl<ER: RaftEngine> TiKVServer<ER> {
     fn init(mut config: TiKvConfig) -> TiKVServer<ER> {
+        // Property中就一个 shutdown
         tikv_util::thread_group::set_properties(Some(GroupProperties::default()));
         // It is okay use pd config and security config before `init_config`,
         // because these configs must be provided by command line, and only

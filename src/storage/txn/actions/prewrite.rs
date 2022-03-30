@@ -106,7 +106,8 @@ pub fn prewrite<S: Snapshot>(
         };
         return Ok((min_commit_ts, OldValue::Unspecified));
     }
-
+    
+    // todo: 为什么需要old_value
     let old_value = if txn_props.need_old_value
         && matches!(
             mutation.mutation_type,

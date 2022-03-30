@@ -1457,7 +1457,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
 
         let apply_poller_builder = ApplyPollerBuilder::<EK>::new(
             &builder,
-            Box::new(self.router.clone()),
+            Box::new(self.router.clone()), // 这里传的是raftsystem的router，以此可以建立联系吧（raft commit后可以发送给apply poller）
             self.apply_router.clone(),
         );
         self.apply_system
@@ -1483,6 +1483,8 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
         let (raft_builder, apply_builder) = (builder.clone(), apply_poller_builder.clone());
 
         let tag = format!("raftstore-{}", store.get_id());
+
+        // 这里初始化并启动 raftstore 的poller
         self.system.spawn(tag, builder);
         let mut mailboxes = Vec::with_capacity(region_peers.len());
         let mut address = Vec::with_capacity(region_peers.len());
@@ -1505,6 +1507,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftBatchSystem<EK, ER> {
             })
             .unwrap();
 
+        // 这里初始化并启动 apply 的poller
         self.apply_system
             .spawn("apply".to_owned(), apply_poller_builder);
 

@@ -512,6 +512,8 @@ where
         if !self.kv_wb_mut().is_empty() {
             let mut write_opts = engine_traits::WriteOptions::new();
             write_opts.set_sync(need_sync);
+
+            // 这里会真正落盘 （将writebatch里的内容写到磁盘）
             self.kv_wb().write_opt(&write_opts).unwrap_or_else(|e| {
                 panic!("failed to write to engine: {:?}", e);
             });
@@ -1438,6 +1440,7 @@ where
         for req in requests {
             let cmd_type = req.get_cmd_type();
             match cmd_type {
+                // 这里的各操作只是将 write encode并缓存到到 ctx.kv_wb 里面
                 CmdType::Put => self.handle_put(ctx, req),
                 CmdType::Delete => self.handle_delete(ctx, req),
                 CmdType::DeleteRange => {
@@ -1575,7 +1578,7 @@ where
             } else {
                 self.metrics.delete_keys_hint += 1;
             }
-        } else {
+        } else {    
             ctx.kv_wb.delete(key).unwrap_or_else(|e| {
                 panic!(
                     "{} failed to delete {}: {}",
