@@ -414,11 +414,13 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             .get(priority_tag)
             .inc();
 
+        // 通过对cid进行模运算，返回一个task slot
         let mut task_slot = self.inner.get_task_slot(cid);
         let tctx = task_slot
             .entry(cid)
             .or_insert_with(|| self.inner.new_task_context(Task::new(cid, cmd), callback));
         let deadline = tctx.task.as_ref().unwrap().cmd.deadline();
+        // 所以这里锁的获取，是在某一个slot中进行排队分发的
         if self.inner.latches.acquire(&mut tctx.lock, cid) {
             fail_point!("txn_scheduler_acquire_success");
             tctx.on_schedule();

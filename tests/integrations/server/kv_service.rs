@@ -279,7 +279,7 @@ fn test_mvcc_basic() {
         ctx.clone(),
         vec![mutation],
         k.clone(),
-        prewrite_start_version,
+        prewrite_start_version,   // timestamp : 1
     );
 
     // Commit
@@ -289,8 +289,8 @@ fn test_mvcc_basic() {
         &client,
         ctx.clone(),
         vec![k.clone()],
-        prewrite_start_version,
-        commit_version,
+        prewrite_start_version,   // timestamp : 1
+        commit_version,           // timestamp : 2
         commit_version,
     );
 
