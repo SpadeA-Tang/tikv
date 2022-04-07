@@ -515,6 +515,10 @@ fn test_mvcc_resolve_lock_gc_and_delete() {
     );
 
     // Resolve lock
+    // 首先发起 ResolveLockReadPhase 这样一个请求，到Scheduler::process中 会走 process_read 分支
+    // 他会调用 scan_lock 读到相关的lock，如果有读到，则会在 ProcessResult 中初始化 NextCommand 域，其command类型为ResolveLock
+    // 然后回到 process_read 中调用on_read_finished， 该函数判断是否 NextCommand 是否为空
+    // 如果非空，则会调用 scheduler 执行这个command
     ts += 1;
     let resolve_lock_commit_version = ts;
     let mut resolve_lock_req = ResolveLockRequest::default();
