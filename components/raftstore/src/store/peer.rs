@@ -3640,6 +3640,7 @@ where
             ));
         };
 
+        // todo: what does it mean
         // Record current proposed index. If there are some in-memory pessimistic locks, we should
         // wait until applying to the proposed index before proposing pessimistic locks and
         // PrepareMerge. Otherwise, if an already proposed command will remove a pessimistic lock,

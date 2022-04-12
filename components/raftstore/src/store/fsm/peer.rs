@@ -4257,7 +4257,7 @@ where
                 }
             }
         }
-
+        // todo: What is pre_propose doing
         match self.pre_propose_raft_command(&msg) {
             Ok(Some(resp)) => {
                 cb.invoke_with_response(resp);
@@ -4605,7 +4605,8 @@ where
             "peer_id" => self.fsm.peer_id(),
             "split_keys" => %KeysInfoFormatter(split_keys.iter()),
             "source" => source,
-        );
+        ); 
+        //  检查key是不是为空，是不是leader，epoch_version对不对得上
         if let Err(e) = self.validate_split_region(&region_epoch, &split_keys) {
             cb.invoke_with_response(new_error(e));
             return;

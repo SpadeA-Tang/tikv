@@ -281,6 +281,7 @@ where
         let mut next_key = Some(Key::from_encoded_slice(start_key));
         while next_key.is_some() {
             // Scans at most `GcConfig.batch_keys` keys.
+            // 获取最多 GcConfig.batch_keys 个数的key，如果多余这个数，那么 updated_next_key 非空，并且之前最后查找到的key（验证下）
             let (keys, updated_next_key) = reader
                 .scan_keys(next_key, self.cfg.batch_keys)
                 .map_err(TxnError::from_mvcc)?;

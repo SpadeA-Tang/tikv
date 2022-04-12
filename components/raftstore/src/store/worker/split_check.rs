@@ -307,6 +307,7 @@ where
             let mut keys = 0;
             let mut bucket_size: u64 = 0;
             while let Some(e) = iter.next() {
+                // todo: SplitChecker.on_kv 永远返回false 这里的逻辑是什么
                 if host.on_kv(region, &e) {
                     return;
                 }
