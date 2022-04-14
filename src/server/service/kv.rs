@@ -348,6 +348,44 @@ impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager> Tikv for
         );
     }
 
+    fn coprocessor_bucket(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: Request,
+        mut sink: ServerStreamingSink<Response>,
+    ) {
+        let begin_instant = Instant::now_coarse();
+
+        let mut stream = self
+            .copr
+            .parse_and_handle_stream_request(req, Some(ctx.peer()))
+            .map(|resp| {
+                GrpcResult::<(Response, WriteFlags)>::Ok((
+                    resp,
+                    WriteFlags::default().buffer_hint(true),
+                ))
+            });
+        let future = async move {
+            match sink.send_all(&mut stream).await.map_err(Error::from) {
+                Ok(_) => {
+                    GRPC_MSG_HISTOGRAM_STATIC
+                        .coprocessor_stream
+                        .observe(duration_to_sec(begin_instant.saturating_elapsed()));
+                    let _ = sink.close().await;
+                }
+                Err(e) => {
+                    info!("kv rpc failed";
+                        "request" => "coprocessor_stream",
+                        "err" => ?e
+                    );
+                    GRPC_MSG_FAIL_COUNTER.coprocessor_stream.inc();
+                }
+            }
+        };
+
+        ctx.spawn(future);
+    }
+
     fn coprocessor(&mut self, ctx: RpcContext<'_>, req: Request, sink: UnarySink<Response>) {
         forward_unary!(self.proxy, coprocessor, ctx, req, sink);
         let begin_instant = Instant::now_coarse();

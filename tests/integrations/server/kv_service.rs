@@ -600,6 +600,15 @@ fn test_coprocessor() {
 }
 
 #[test]
+fn test_coprocessor_bucket() {
+    let (_cluster, client, _) = must_new_cluster_and_kv_client();
+    let mut req = Request::default();
+    req.set_tp(REQ_TYPE_DAG);
+    let _res = client.coprocessor_bucket(&req).unwrap();
+    println!("Done");
+}
+
+#[test]
 fn test_split_region() {
     let (mut cluster, client, ctx) = must_new_cluster_and_kv_client();
 
