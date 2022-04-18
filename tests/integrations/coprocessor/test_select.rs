@@ -58,6 +58,7 @@ fn test_select() {
     // for dag selection
     let req = DAGSelect::from(&product).build();
     let mut resp = handle_select(&endpoint, req);
+    let _chunks = resp.get_chunks();
     let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
     for (row, (id, name, cnt)) in spliter.zip(data) {
         let name_datum = name.map(|s| s.as_bytes()).into();
@@ -79,7 +80,7 @@ fn test_batch_row_limit() {
         (4, Some("name:3"), 1),
         (5, Some("name:1"), 4),
     ];
-    let batch_row_limit = 3;
+    let batch_row_limit = 1;
     let chunk_datum_limit = batch_row_limit * 3; // we have 3 fields.
     let product = ProductTable::new();
     let (_, endpoint) = {
@@ -92,7 +93,8 @@ fn test_batch_row_limit() {
     // for dag selection
     let req = DAGSelect::from(&product).build();
     let mut resp = handle_select(&endpoint, req);
-    check_chunk_datum_count(resp.get_chunks(), chunk_datum_limit);
+    let chunks = resp.get_chunks();
+    check_chunk_datum_count(chunks, chunk_datum_limit);
     let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
     for (row, (id, name, cnt)) in spliter.zip(data) {
         let name_datum = name.map(|s| s.as_bytes()).into();

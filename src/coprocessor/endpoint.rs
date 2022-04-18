@@ -479,7 +479,12 @@ impl<E: Engine> Endpoint<E> {
         peer: Option<String>,
     ) -> impl Future<Output = MemoryTraceGuard<coppb::Response>> {
         let result_of_future = self
+            // check memory lock，parse 请求，然后创建builder（closure类型，需要后续填入snap和ctx）
             .parse_request_and_check_memory_locks(req, peer, false)
+            // 上面会返回 builder和req_ctx， 然后在 handle_unary_request 中，初始化 priority, task_id等，将
+            // handle_unary_request_impl(..) 和priority等信息传入 read_poll 执行
+            // handle_unary_request_impl 会真正执行请求：获取snapshot，将上面的builder build成handler，这使得
+            // 可以调用 handler.handle_request() 来处理请求
             .map(|(handler_builder, req_ctx)| self.handle_unary_request(req_ctx, handler_builder));
 
         async move {

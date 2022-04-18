@@ -446,7 +446,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
             let mut sample = self.quota_limiter.new_sample();
             let (drained, record_len) = {
                 let _guard = sample.observe_cpu();
-                self.internal_handle_request(
+                self.internal_handle_request( // 执行 request, 获取的data存于chunk中
                     false,
                     batch_size,
                     &mut chunk,
