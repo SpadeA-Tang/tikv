@@ -479,7 +479,7 @@ impl<E: Engine> Endpoint<E> {
         peer: Option<String>,
     ) -> impl Future<Output = MemoryTraceGuard<coppb::Response>> {
         let result_of_future = self
-            // check memory lock，parse 请求，然后创建builder（closure类型，需要后续填入snap和ctx）
+            // check memory lock，parse 请求，然后创建builder（closure类型，需要在后续调用中填入snapshot和ctx）
             .parse_request_and_check_memory_locks(req, peer, false)
             // 上面会返回 builder和req_ctx， 然后在 handle_unary_request 中，初始化 priority, task_id等，将
             // handle_unary_request_impl(..) 和priority等信息传入 read_poll 执行

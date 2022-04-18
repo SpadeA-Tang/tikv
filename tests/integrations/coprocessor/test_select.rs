@@ -73,6 +73,34 @@ fn test_select() {
 }
 
 #[test]
+fn test_select_bucket() {
+    let data = vec![
+        (1, Some("name:0"), 2),
+        (2, Some("name:4"), 3),
+        (4, Some("name:3"), 1),
+        (5, Some("name:1"), 4),
+    ];
+
+    let product = ProductTable::new();
+    let (_, endpoint) = init_with_data(&product, &data);
+    // for dag selection
+    let req = DAGSelect::from(&product).build();
+    let mut resp = handle_select(&endpoint, req);
+    let _chunks = resp.get_chunks();
+    let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
+    for (row, (id, name, cnt)) in spliter.zip(data) {
+        let name_datum = name.map(|s| s.as_bytes()).into();
+        let expected_encoded = datum::encode_value(
+            &mut EvalContext::default(),
+            &[Datum::I64(id), name_datum, cnt.into()],
+        )
+        .unwrap();
+        let result_encoded = datum::encode_value(&mut EvalContext::default(), &row).unwrap();
+        assert_eq!(result_encoded, &*expected_encoded);
+    }
+}
+
+#[test]
 fn test_batch_row_limit() {
     let data = vec![
         (1, Some("name:0"), 2),
