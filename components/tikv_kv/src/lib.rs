@@ -20,7 +20,7 @@ extern crate tikv_util;
 mod btree_engine;
 mod cursor;
 pub mod metrics;
-mod mock_engine;
+pub mod mock_engine;
 mod perf_context;
 mod raftstore_impls;
 mod rocksdb_engine;

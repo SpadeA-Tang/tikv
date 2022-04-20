@@ -155,7 +155,7 @@ impl<E: Engine> Endpoint<E> {
         mut req: coppb::Request,
         peer: Option<String>,
         is_streaming: bool,
-    ) -> Result<(RequestHandlerBuilder<E::Snap>, ReqContext)> {
+    ) -> Result<(SubRequestsHandlerBuilder<E::Snap>, ReqContext)> {
         fail_point!("coprocessor_parse_request", |_| Err(box_err!(
             "unsupported tp (failpoint)"
         )));
@@ -172,10 +172,11 @@ impl<E: Engine> Endpoint<E> {
             None
         };
 
+        // todo: What's the function of this `input`
         let mut input = CodedInputStream::from_bytes(&data);
         input.set_recursion_limit(self.recursion_limit);
         let req_ctx: ReqContext;
-        let builder: RequestHandlerBuilder<E::Snap>;
+        let builder: SubRequestsHandlerBuilder<E::Snap>;
 
         match req.get_tp() {
             REQ_TYPE_DAG => {
@@ -218,32 +219,63 @@ impl<E: Engine> Endpoint<E> {
                 let quota_limiter = self.quota_limiter.clone();
                 builder = Box::new(move |snap, req_ctx| {
                     let data_version = snap.ext().get_data_version();
-                    let store = SnapshotStore::new(
-                        snap,
-                        start_ts.into(),
-                        req_ctx.context.get_isolation_level(),
-                        !req_ctx.context.get_not_fill_cache(),
-                        req_ctx.bypass_locks.clone(),
-                        req_ctx.access_locks.clone(),
-                        req.get_is_cache_enabled(),
-                    );
-                    let paging_size = match req.get_paging_size() {
-                        0 => None,
-                        i => Some(i),
-                    };
-                    dag::DagHandlerBuilder::new(
-                        dag,
-                        req_ctx.ranges.clone(),
-                        store,
-                        req_ctx.deadline,
-                        batch_row_limit,
-                        is_streaming,
-                        req.get_is_cache_enabled(),
-                        paging_size,
-                        quota_limiter,
-                    )
-                    .data_version(data_version)
-                    .build()
+
+                    let mut sub_ranges: Vec<_>;
+
+                    if let Some(bucket_meta) = snap.ext().get_buckets() {
+                        let bucket_keys = &bucket_meta.as_ref().keys;
+                        println!("Current bucket keys:");
+                        for key in bucket_keys {
+                            println!("key {:?}", key);
+                        }
+                        let req_key_ranges: Vec<_> = req_ctx
+                            .ranges
+                            .iter()
+                            .map(|key_range| {
+                                (
+                                    txn_types::Key::from_raw(&key_range.start).into_encoded(),
+                                    txn_types::Key::from_raw(&key_range.end).into_encoded(),
+                                )
+                            })
+                            .collect();
+                        sub_ranges = split_reqs_by_buckets(&req_key_ranges, bucket_keys);
+                    } else {
+                        sub_ranges = vec![req_ctx.ranges];
+                    }
+
+                    let mut sub_req_builder = vec![];
+
+                    for range in sub_ranges {
+                        let store = SnapshotStore::new(
+                            snap,
+                            start_ts.into(),
+                            req_ctx.context.get_isolation_level(),
+                            !req_ctx.context.get_not_fill_cache(),
+                            req_ctx.bypass_locks.clone(),
+                            req_ctx.access_locks.clone(),
+                            req.get_is_cache_enabled(),
+                        );
+                        let paging_size = match req.get_paging_size() {
+                            0 => None,
+                            i => Some(i),
+                        };
+                        let builder = dag::DagHandlerBuilder::new(
+                            dag,
+                            req_ctx.ranges.clone(),
+                            store,
+                            req_ctx.deadline,
+                            batch_row_limit,
+                            is_streaming,
+                            req.get_is_cache_enabled(),
+                            paging_size,
+                            quota_limiter,
+                        )
+                        .data_version(data_version)
+                        .build();
+                        sub_req_builder.push(builder);
+                    }
+
+                    sub_req_builder
                 });
             }
             REQ_TYPE_ANALYZE => {
@@ -275,15 +307,17 @@ impl<E: Engine> Endpoint<E> {
                 let quota_limiter = self.quota_limiter.clone();
 
                 builder = Box::new(move |snap, req_ctx| {
-                    statistics::analyze::AnalyzeContext::new(
-                        analyze,
-                        req_ctx.ranges.clone(),
-                        start_ts,
-                        snap,
-                        req_ctx,
-                        quota_limiter,
-                    )
-                    .map(|h| h.into_boxed())
+                    vec![
+                        statistics::analyze::AnalyzeContext::new(
+                            analyze,
+                            req_ctx.ranges.clone(),
+                            start_ts,
+                            snap,
+                            req_ctx,
+                            quota_limiter,
+                        )
+                        .map(|h| h.into_boxed()),
+                    ]
                 });
             }
             REQ_TYPE_CHECKSUM => {
@@ -314,14 +348,16 @@ impl<E: Engine> Endpoint<E> {
                 self.check_memory_locks(&req_ctx)?;
 
                 builder = Box::new(move |snap, req_ctx| {
-                    checksum::ChecksumContext::new(
-                        checksum,
-                        req_ctx.ranges.clone(),
-                        start_ts,
-                        snap,
-                        req_ctx,
-                    )
-                    .map(|h| h.into_boxed())
+                    vec![
+                        checksum::ChecksumContext::new(
+                            checksum,
+                            req_ctx.ranges.clone(),
+                            start_ts,
+                            snap,
+                            req_ctx,
+                        )
+                        .map(|h| h.into_boxed()),
+                    ]
                 });
             }
             tp => return Err(box_err!("unsupported tp {}", tp)),
@@ -467,6 +503,46 @@ impl<E: Engine> Endpoint<E> {
             )
             .map_err(|_| Error::MaxPendingTasksExceeded);
         async move { res.await? }
+    }
+
+    fn handle_reqeust_by_buckets(
+        &self,
+        req_ctx: ReqContext,
+        handler_builder: SubRequestsHandlerBuilder<E::Snap>,
+    ) -> impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>> {
+        let priority = req_ctx.context.get_priority();
+        let task_id = req_ctx.build_task_id();
+        let _resource_factory = self.resource_tag_factory;
+        let _slow_log_threshold = self.slow_log_threshold;
+
+        let res = self
+            .read_pool
+            .spawn_handle(
+                Self::handle_reqeust_by_buckets_impl(
+                    self.semaphore.clone(),
+                    req_ctx,
+                    handler_builder,
+                ),
+                priority,
+                task_id,
+            )
+            .map_err(|_| Error::MaxPendingTasksExceeded);
+        async move { res.await? }
+    }
+
+    async fn handle_reqeust_by_buckets_impl(
+        semaphore: Option<Arc<Semaphore>>,
+        req_ctx: ReqContext,
+        handler_builder: SubRequestsHandlerBuilder<E::Snap>,
+    ) -> Result<MemoryTraceGuard<coppb::Response>> {
+        // now: forget about tracker
+
+        let snapshot =
+            unsafe { with_tls_engine(|engine| Self::async_snapshot(engine, &req_ctx)) }.await?;
+
+        let mut handlers = handler_builder(snapshot, &req_ctx)?;
+
+        Ok(())
     }
 
     /// Parses and handles a unary request. Returns a future that will never fail. If there are
@@ -632,6 +708,103 @@ impl<E: Engine> Endpoint<E> {
             .or_else(|e| futures::future::ok(make_error_response(e))) // Stream<Resp, ()>
             .map(|item: std::result::Result<_, ()>| item.unwrap())
     }
+}
+
+use kvproto::coprocessor::KeyRange;
+
+// This is used for generating KeyRange in ReqContext which requires the start and end of KeyRange to be raw data
+// Here, start and end are encoded from txn_types::Key::from_raw(), so we need to decode them.
+fn convert_to_key_range(start: Vec<u8>, end: Vec<u8>) -> KeyRange {
+    let mut key_range = KeyRange::new();
+    key_range.start = txn_types::Key::from_encoded(start).to_raw().unwrap();
+    key_range.end = txn_types::Key::from_encoded(end).to_raw().unwrap();
+    key_range
+}
+
+// Location
+fn split_reqs_by_buckets(
+    req_ranges: &Vec<(Vec<u8>, Vec<u8>)>,
+    bucket_keys: &Vec<Vec<u8>>,
+) -> Vec<Vec<KeyRange>> {
+    // vec![] for end means largest
+    let endest = &Vec::<u8>::new();
+
+    let mut new_req = true;
+    let mut bucket_idx = 0;
+    let mut cur_bucket_start = &bucket_keys[bucket_idx];
+    let mut cur_bucket_end = &bucket_keys[bucket_idx + 1];
+
+    let mut req_idx = 0;
+    let mut cur_range_start = &req_ranges[req_idx].0;
+    let mut cur_range_end = &req_ranges[req_idx].1;
+
+    let mut sub_req_idx: i64 = -1;
+    let mut sub_reqs = vec![];
+    loop {
+        // ""  ------  "e"
+        //   "a" -- "b"
+        if cur_bucket_start <= cur_range_start
+            && (cur_range_end < cur_bucket_end || cur_bucket_end == endest)
+        {
+            if new_req {
+                sub_reqs.push(vec![]);
+                sub_req_idx += 1;
+                new_req = false;
+            }
+
+            sub_reqs[sub_req_idx as usize].push(convert_to_key_range(
+                cur_range_start.clone(),
+                cur_range_end.clone(),
+            ));
+            if req_idx == req_ranges.len() - 1 {
+                break;
+            }
+            req_idx += 1;
+            cur_range_start = &req_ranges[req_idx].0;
+            cur_range_end = &req_ranges[req_idx].1;
+        // "g"  --  "i"
+        //     "h"  --   "z"
+        } else if cur_bucket_end != endest
+            && cur_bucket_start <= cur_range_start
+            && cur_range_start < cur_bucket_end
+            && cur_bucket_end <= cur_range_end
+        {
+            sub_reqs.push(vec![]);
+            sub_req_idx += 1;
+
+            sub_reqs[sub_req_idx as usize].push(convert_to_key_range(
+                cur_range_start.clone(),
+                cur_bucket_end.clone(),
+            ));
+            // We split this range to two ranges:
+            // [cur_range_start, cur_range_end) -> [cur_range_start, cur_bucket_end) + [cur_bucket_end, cur_range_end)
+            cur_range_start = cur_bucket_end;
+
+            bucket_idx += 1;
+            new_req = true;
+            if bucket_idx == bucket_keys.len() - 1 {
+                break;
+            }
+            cur_bucket_start = &bucket_keys[bucket_idx];
+            cur_bucket_end = &bucket_keys[bucket_idx + 1];
+        // "e" -- "g"
+        //            "h" -- "z"
+        } else if cur_bucket_end != endest && cur_bucket_end <= cur_range_start {
+            bucket_idx += 1;
+            new_req = true;
+            cur_bucket_start = &bucket_keys[bucket_idx];
+            cur_bucket_end = &bucket_keys[bucket_idx + 1];
+        }
+    }
+
+    for req in &sub_reqs {
+        println!("Reqs: ");
+        for key_range in req {
+            println!("req: {:?} {:?}", key_range.start, key_range.end);
+        }
+    }
+
+    sub_reqs
 }
 
 fn make_error_response(e: Error) -> coppb::Response {

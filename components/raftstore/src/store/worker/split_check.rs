@@ -308,6 +308,7 @@ where
             let mut bucket_size: u64 = 0;
             while let Some(e) = iter.next() {
                 // todo: SplitChecker.on_kv 永远返回false 这里的逻辑是什么
+                // println!("MergedIterator entry: key {:?}", e.key());
                 if host.on_kv(region, &e) {
                     return;
                 }
@@ -316,7 +317,8 @@ where
                 if host.enable_region_bucket() {
                     bucket_size += e.entry_size() as u64;
                     if bucket_size >= host.region_bucket_size() {
-                        bucket_keys.push(keys::origin_key(e.key()).to_vec());
+                        let raw_key = keys::origin_key(e.key()).to_vec();
+                        bucket_keys.push(raw_key);
                         bucket_size = 0;
                     }
                 }

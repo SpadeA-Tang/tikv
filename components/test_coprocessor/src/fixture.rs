@@ -88,8 +88,10 @@ pub fn init_data_with_details<E: Engine>(
     store.begin();
     for &(id, name, count) in vals {
         store
-            .insert_into(tbl)
-            .set(&tbl["id"], Datum::I64(id))
+            // 这里创建一个 Insert
+            .insert_into(tbl)                
+            // 这里在 Insert.values 里面 插入 (col.id, value: Datum)，col.id 通过 table.index_by_name 获取 idx, 然后从 table.columns[idx] 中获取colum的信息
+            .set(&tbl["id"], Datum::I64(id)) 
             .set(&tbl["name"], name.map(str::as_bytes).into())
             .set(&tbl["count"], Datum::I64(count))
             .execute_with_ctx(ctx.clone());
@@ -115,12 +117,18 @@ pub fn init_data_with_details<E: Engine>(
     (store, copr)
 }
 
+
+// use tikv::storage::kv::{MockEngineBuilder};
+// use tikv_kv::mock_engine::MockEngine;
 pub fn init_data_with_commit(
     tbl: &ProductTable,
     vals: &[(i64, Option<&str>, i64)],
     commit: bool,
 ) -> (Store<RocksEngine>, Endpoint<RocksEngine>) {
     let engine = TestEngineBuilder::new().build().unwrap();
+    // let builder =
+    //     MockEngineBuilder::from_rocks_engine(engine);
+    // let engine = builder.build();
     init_data_with_engine_and_commit(Context::default(), engine, tbl, vals, commit)
 }
 

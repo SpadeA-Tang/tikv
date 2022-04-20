@@ -73,34 +73,6 @@ fn test_select() {
 }
 
 #[test]
-fn test_select_bucket() {
-    let data = vec![
-        (1, Some("name:0"), 2),
-        (2, Some("name:4"), 3),
-        (4, Some("name:3"), 1),
-        (5, Some("name:1"), 4),
-    ];
-
-    let product = ProductTable::new();
-    let (_, endpoint) = init_with_data(&product, &data);
-    // for dag selection
-    let req = DAGSelect::from(&product).build();
-    let mut resp = handle_select(&endpoint, req);
-    let _chunks = resp.get_chunks();
-    let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
-    for (row, (id, name, cnt)) in spliter.zip(data) {
-        let name_datum = name.map(|s| s.as_bytes()).into();
-        let expected_encoded = datum::encode_value(
-            &mut EvalContext::default(),
-            &[Datum::I64(id), name_datum, cnt.into()],
-        )
-        .unwrap();
-        let result_encoded = datum::encode_value(&mut EvalContext::default(), &row).unwrap();
-        assert_eq!(result_encoded, &*expected_encoded);
-    }
-}
-
-#[test]
 fn test_batch_row_limit() {
     let data = vec![
         (1, Some("name:0"), 2),
@@ -2017,4 +1989,86 @@ fn test_buckets() {
     };
 
     wait_refresh_buckets(0);
+}
+
+use raftstore::coprocessor::{self, CoprocessorHost};
+use raftstore::store::SplitCheckRunner;
+use raftstore::store::worker::SplitCheckTask;
+use std::sync::mpsc;
+use tikv::storage::Engine;
+use tikv_util::config::ReadableSize;
+use tikv_util::worker::Runnable;
+use kvproto::pdpb::CheckPolicy;
+use raftstore::store::{CasualMessage};
+
+
+
+const BUCKET_NUMBER_LIMIT: usize = 1024;
+
+#[test]
+fn test_buckets_try() {
+    let data = vec![
+        (1, Some("name:0"), 2),
+        (2, Some("name:4"), 3),
+        (4, Some("name:3"), 1),
+        (5, Some("name:1"), 4),
+    ];
+
+    let product = ProductTable::new();
+    let (mut cluster, raft_engine, ctx) = new_raft_engine(1, "");
+
+    let engine = raft_engine.kv_engine();
+    let (_, endpoint) =
+        init_data_with_engine_and_commit(ctx.clone(), raft_engine, &product, &data, true);
+
+    let cfg = coprocessor::Config {
+        region_max_size: ReadableSize(BUCKET_NUMBER_LIMIT as u64),
+        enable_region_bucket: true,
+        region_bucket_size: ReadableSize(200_u64), // so that each key below will form a bucket
+        ..Default::default()
+    };
+
+    let (tx, rx) = mpsc::sync_channel(100);
+    let mut runnable = SplitCheckRunner::new(engine, tx.clone(), CoprocessorHost::new(tx, cfg));
+
+    runnable.run(SplitCheckTask::split_check(
+        cluster.get_region("".as_bytes()).clone(),
+        false,
+        CheckPolicy::Scan,
+    ));
+    let bucket_keys = print_bucket_info(&rx);
+
+    let mut bucket_key = product.get_record_range_all().get_start().to_owned();
+    bucket_key.push(0);
+    let region = cluster.get_region(&bucket_key);
+    cluster.refresh_region_bucket_keys(&region, bucket_keys);
+
+    let req = DAGSelect::from(&product).build_with(ctx, &[0]);
+    let mut resp = handle_select(&endpoint, req);
+    let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
+    for (row, (id, name, cnt)) in spliter.zip(data) {
+        println!("Response: {:?}", row);
+        let name_datum = name.map(|s| s.as_bytes()).into();
+        println!("Expected: {:?}", &[Datum::I64(id), name_datum, cnt.into()]);
+    }
+}
+
+
+use engine_test::kv::KvTestEngine;
+
+pub fn print_bucket_info(
+    rx: &mpsc::Receiver<(u64, CasualMessage<KvTestEngine>)>,
+) -> Vec<Vec<u8>> {
+    loop {
+        if let Ok((
+            _,
+            CasualMessage::RefreshRegionBuckets {
+                region_epoch: _,
+                bucket_keys,
+            },
+        )) = rx.try_recv()
+        {
+            return bucket_keys;
+        }
+    }
 }

@@ -89,6 +89,9 @@ pub trait RequestHandler: Send {
 type RequestHandlerBuilder<Snap> =
     Box<dyn for<'a> FnOnce(Snap, &ReqContext) -> Result<Box<dyn RequestHandler>> + Send>;
 
+type SubRequestsHandlerBuilder<Snap> =
+    Box<dyn for<'a> FnOnce(Snap, &ReqContext) -> Vec<Result<Box<dyn RequestHandler>>> + Send>;
+
 /// Encapsulate the `kvrpcpb::Context` to provide some extra properties.
 #[derive(Debug, Clone)]
 pub struct ReqContext {
