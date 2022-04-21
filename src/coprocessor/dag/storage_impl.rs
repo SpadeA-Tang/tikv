@@ -70,9 +70,6 @@ impl<S: Store> Storage for TiKVStorage<S> {
     fn scan_next(&mut self) -> QEResult<Option<OwnedKvPair>> {
         // Unwrap is fine because we must have called `reset_range` before calling `scan_next`.
         let kv = self.scanner.as_mut().unwrap().next().map_err(Error::from)?;
-        if let Some(kv_clone) = kv.clone() {
-            println!("Key {:?} value {:?}", kv_clone.0.as_encoded(), kv_clone.1);
-        }
         Ok(kv.map(|(k, v)| (k.into_raw().unwrap(), v)))
     }
 

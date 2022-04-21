@@ -1991,28 +1991,24 @@ fn test_buckets() {
     wait_refresh_buckets(0);
 }
 
+use kvproto::pdpb::CheckPolicy;
 use raftstore::coprocessor::{self, CoprocessorHost};
-use raftstore::store::SplitCheckRunner;
 use raftstore::store::worker::SplitCheckTask;
+use raftstore::store::CasualMessage;
+use raftstore::store::SplitCheckRunner;
 use std::sync::mpsc;
 use tikv::storage::Engine;
 use tikv_util::config::ReadableSize;
 use tikv_util::worker::Runnable;
-use kvproto::pdpb::CheckPolicy;
-use raftstore::store::{CasualMessage};
-
-
 
 const BUCKET_NUMBER_LIMIT: usize = 1024;
 
 #[test]
 fn test_buckets_try() {
-    let data = vec![
-        (1, Some("name:0"), 2),
-        (2, Some("name:4"), 3),
-        (4, Some("name:3"), 1),
-        (5, Some("name:1"), 4),
-    ];
+    let mut data = vec![];
+    for i in 0..20 {
+        data.push((i, Some("name: xxx"), i * 10));
+    }
 
     let product = ProductTable::new();
     let (mut cluster, raft_engine, ctx) = new_raft_engine(1, "");
@@ -2024,7 +2020,7 @@ fn test_buckets_try() {
     let cfg = coprocessor::Config {
         region_max_size: ReadableSize(BUCKET_NUMBER_LIMIT as u64),
         enable_region_bucket: true,
-        region_bucket_size: ReadableSize(200_u64), // so that each key below will form a bucket
+        region_bucket_size: ReadableSize(100_u64), // so that each key below will form a bucket
         ..Default::default()
     };
 
@@ -2038,27 +2034,39 @@ fn test_buckets_try() {
     ));
     let bucket_keys = print_bucket_info(&rx);
 
+    println!("Split key");
+    for key in &bucket_keys {
+        println!("{:?}", key);
+    }
+    println!();
+
     let mut bucket_key = product.get_record_range_all().get_start().to_owned();
     bucket_key.push(0);
     let region = cluster.get_region(&bucket_key);
     cluster.refresh_region_bucket_keys(&region, bucket_keys);
 
     let req = DAGSelect::from(&product).build_with(ctx, &[0]);
-    let mut resp = handle_select(&endpoint, req);
-    let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
-    for (row, (id, name, cnt)) in spliter.zip(data) {
-        println!("Response: {:?}", row);
-        let name_datum = name.map(|s| s.as_bytes()).into();
-        println!("Expected: {:?}", &[Datum::I64(id), name_datum, cnt.into()]);
-    }
-}
+    let resp = handle_select_split_by_bucket(&endpoint, req);
 
+    println!();
+    for (idx, mut res) in resp.into_iter().enumerate() {
+        let spliter = DAGChunkSpliter::new(res.take_chunks().into(), 3);
+        println!("The {}th subtask results:", idx + 1);
+        for row in spliter {
+            println!("Row: {:?}", row);
+        }
+    }
+
+    // println!("Ground truth:");
+    // for (id, name, cnt) in data {
+    //     let name_datum = name.map(|s| s.as_bytes()).into();
+    //     println!("Row: {:?}", &[Datum::I64(id), name_datum, cnt.into()]);
+    // }
+}
 
 use engine_test::kv::KvTestEngine;
 
-pub fn print_bucket_info(
-    rx: &mpsc::Receiver<(u64, CasualMessage<KvTestEngine>)>,
-) -> Vec<Vec<u8>> {
+pub fn print_bucket_info(rx: &mpsc::Receiver<(u64, CasualMessage<KvTestEngine>)>) -> Vec<Vec<u8>> {
     loop {
         if let Ok((
             _,

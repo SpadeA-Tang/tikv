@@ -7,6 +7,7 @@ use std::{borrow::Cow, time::Duration};
 
 use async_stream::try_stream;
 use futures::channel::mpsc;
+use futures::future::{join_all, JoinAll};
 use futures::prelude::*;
 use tidb_query_common::execute_stats::ExecSummary;
 use tokio::sync::Semaphore;
@@ -155,6 +156,189 @@ impl<E: Engine> Endpoint<E> {
         mut req: coppb::Request,
         peer: Option<String>,
         is_streaming: bool,
+    ) -> Result<(RequestHandlerBuilder<E::Snap>, ReqContext)> {
+        fail_point!("coprocessor_parse_request", |_| Err(box_err!(
+            "unsupported tp (failpoint)"
+        )));
+
+        let (context, data, ranges, mut start_ts) = (
+            req.take_context(),
+            req.take_data(),
+            req.take_ranges().to_vec(),
+            req.get_start_ts(),
+        );
+        let cache_match_version = if req.get_is_cache_enabled() {
+            Some(req.get_cache_if_match_version())
+        } else {
+            None
+        };
+
+        let mut input = CodedInputStream::from_bytes(&data);
+        input.set_recursion_limit(self.recursion_limit);
+        let req_ctx: ReqContext;
+        let builder: RequestHandlerBuilder<E::Snap>;
+
+        match req.get_tp() {
+            REQ_TYPE_DAG => {
+                let mut dag = DagRequest::default();
+                box_try!(dag.merge_from(&mut input));
+                let mut table_scan = false;
+                let mut is_desc_scan = false;
+                if let Some(scan) = dag.get_executors().iter().next() {
+                    table_scan = scan.get_tp() == ExecType::TypeTableScan;
+                    if table_scan {
+                        is_desc_scan = scan.get_tbl_scan().get_desc();
+                    } else {
+                        is_desc_scan = scan.get_idx_scan().get_desc();
+                    }
+                }
+                if start_ts == 0 {
+                    start_ts = dag.get_start_ts_fallback();
+                }
+                let tag = if table_scan {
+                    ReqTag::select
+                } else {
+                    ReqTag::index
+                };
+
+                req_ctx = ReqContext::new(
+                    tag,
+                    context,
+                    ranges,
+                    self.max_handle_duration,
+                    peer,
+                    Some(is_desc_scan),
+                    start_ts.into(),
+                    cache_match_version,
+                    self.perf_level,
+                );
+
+                self.check_memory_locks(&req_ctx)?;
+
+                let batch_row_limit = self.get_batch_row_limit(is_streaming);
+                let quota_limiter = self.quota_limiter.clone();
+                builder = Box::new(move |snap, req_ctx| {
+                    let data_version = snap.ext().get_data_version();
+                    let store = SnapshotStore::new(
+                        snap,
+                        start_ts.into(),
+                        req_ctx.context.get_isolation_level(),
+                        !req_ctx.context.get_not_fill_cache(),
+                        req_ctx.bypass_locks.clone(),
+                        req_ctx.access_locks.clone(),
+                        req.get_is_cache_enabled(),
+                    );
+                    let paging_size = match req.get_paging_size() {
+                        0 => None,
+                        i => Some(i),
+                    };
+                    dag::DagHandlerBuilder::new(
+                        dag,
+                        req_ctx.ranges.clone(),
+                        store,
+                        req_ctx.deadline,
+                        batch_row_limit,
+                        is_streaming,
+                        req.get_is_cache_enabled(),
+                        paging_size,
+                        quota_limiter,
+                    )
+                    .data_version(data_version)
+                    .build()
+                });
+            }
+            REQ_TYPE_ANALYZE => {
+                let mut analyze = AnalyzeReq::default();
+                box_try!(analyze.merge_from(&mut input));
+                if start_ts == 0 {
+                    start_ts = analyze.get_start_ts_fallback();
+                }
+
+                let tag = match analyze.get_tp() {
+                    AnalyzeType::TypeIndex | AnalyzeType::TypeCommonHandle => ReqTag::analyze_index,
+                    AnalyzeType::TypeColumn | AnalyzeType::TypeMixed => ReqTag::analyze_table,
+                    AnalyzeType::TypeFullSampling => ReqTag::analyze_full_sampling,
+                    AnalyzeType::TypeSampleIndex => unimplemented!(),
+                };
+                req_ctx = ReqContext::new(
+                    tag,
+                    context,
+                    ranges,
+                    self.max_handle_duration,
+                    peer,
+                    None,
+                    start_ts.into(),
+                    cache_match_version,
+                    self.perf_level,
+                );
+
+                self.check_memory_locks(&req_ctx)?;
+                let quota_limiter = self.quota_limiter.clone();
+
+                builder = Box::new(move |snap, req_ctx| {
+                    statistics::analyze::AnalyzeContext::new(
+                        analyze,
+                        req_ctx.ranges.clone(),
+                        start_ts,
+                        snap,
+                        req_ctx,
+                        quota_limiter,
+                    )
+                    .map(|h| h.into_boxed())
+                });
+            }
+            REQ_TYPE_CHECKSUM => {
+                let mut checksum = ChecksumRequest::default();
+                box_try!(checksum.merge_from(&mut input));
+                let table_scan = checksum.get_scan_on() == ChecksumScanOn::Table;
+                if start_ts == 0 {
+                    start_ts = checksum.get_start_ts_fallback();
+                }
+
+                let tag = if table_scan {
+                    ReqTag::checksum_table
+                } else {
+                    ReqTag::checksum_index
+                };
+                req_ctx = ReqContext::new(
+                    tag,
+                    context,
+                    ranges,
+                    self.max_handle_duration,
+                    peer,
+                    None,
+                    start_ts.into(),
+                    cache_match_version,
+                    self.perf_level,
+                );
+
+                self.check_memory_locks(&req_ctx)?;
+
+                builder = Box::new(move |snap, req_ctx| {
+                    checksum::ChecksumContext::new(
+                        checksum,
+                        req_ctx.ranges.clone(),
+                        start_ts,
+                        snap,
+                        req_ctx,
+                    )
+                    .map(|h| h.into_boxed())
+                });
+            }
+            tp => return Err(box_err!("unsupported tp {}", tp)),
+        };
+        Ok((builder, req_ctx))
+    }
+
+    /// Parse the raw `Request` to create `RequestHandlerBuilder` and `ReqContext`.
+    /// Returns `Err` if fails.
+    ///
+    /// It also checks if there are locks in memory blocking this read request.
+    fn parse_request_by_bucket_and_check_memory_locks(
+        &self,
+        mut req: coppb::Request,
+        peer: Option<String>,
+        is_streaming: bool,
     ) -> Result<(SubRequestsHandlerBuilder<E::Snap>, ReqContext)> {
         fail_point!("coprocessor_parse_request", |_| Err(box_err!(
             "unsupported tp (failpoint)"
@@ -220,14 +404,14 @@ impl<E: Engine> Endpoint<E> {
                 builder = Box::new(move |snap, req_ctx| {
                     let data_version = snap.ext().get_data_version();
 
-                    let mut sub_ranges: Vec<_>;
+                    let sub_ranges: Vec<_>;
 
                     if let Some(bucket_meta) = snap.ext().get_buckets() {
                         let bucket_keys = &bucket_meta.as_ref().keys;
-                        println!("Current bucket keys:");
-                        for key in bucket_keys {
-                            println!("key {:?}", key);
-                        }
+                        // println!("Current bucket keys:");
+                        // for key in bucket_keys {
+                        //     println!("key {:?}", key);
+                        // }
                         let req_key_ranges: Vec<_> = req_ctx
                             .ranges
                             .iter()
@@ -240,14 +424,14 @@ impl<E: Engine> Endpoint<E> {
                             .collect();
                         sub_ranges = split_reqs_by_buckets(&req_key_ranges, bucket_keys);
                     } else {
-                        sub_ranges = vec![req_ctx.ranges];
+                        sub_ranges = vec![req_ctx.ranges.clone()];
                     }
 
                     let mut sub_req_builder = vec![];
 
                     for range in sub_ranges {
                         let store = SnapshotStore::new(
-                            snap,
+                            snap.clone(),
                             start_ts.into(),
                             req_ctx.context.get_isolation_level(),
                             !req_ctx.context.get_not_fill_cache(),
@@ -260,22 +444,22 @@ impl<E: Engine> Endpoint<E> {
                             i => Some(i),
                         };
                         let builder = dag::DagHandlerBuilder::new(
-                            dag,
-                            req_ctx.ranges.clone(),
+                            dag.clone(),
+                            range,
                             store,
                             req_ctx.deadline,
                             batch_row_limit,
                             is_streaming,
                             req.get_is_cache_enabled(),
                             paging_size,
-                            quota_limiter,
+                            quota_limiter.clone(),
                         )
                         .data_version(data_version)
-                        .build();
+                        .build()?;
                         sub_req_builder.push(builder);
                     }
 
-                    sub_req_builder
+                    Ok(sub_req_builder)
                 });
             }
             REQ_TYPE_ANALYZE => {
@@ -307,17 +491,16 @@ impl<E: Engine> Endpoint<E> {
                 let quota_limiter = self.quota_limiter.clone();
 
                 builder = Box::new(move |snap, req_ctx| {
-                    vec![
-                        statistics::analyze::AnalyzeContext::new(
-                            analyze,
-                            req_ctx.ranges.clone(),
-                            start_ts,
-                            snap,
-                            req_ctx,
-                            quota_limiter,
-                        )
-                        .map(|h| h.into_boxed()),
-                    ]
+                    let builder = statistics::analyze::AnalyzeContext::new(
+                        analyze,
+                        req_ctx.ranges.clone(),
+                        start_ts,
+                        snap,
+                        req_ctx,
+                        quota_limiter,
+                    )
+                    .map(|h| h.into_boxed())?;
+                    Ok(vec![builder])
                 });
             }
             REQ_TYPE_CHECKSUM => {
@@ -348,16 +531,15 @@ impl<E: Engine> Endpoint<E> {
                 self.check_memory_locks(&req_ctx)?;
 
                 builder = Box::new(move |snap, req_ctx| {
-                    vec![
-                        checksum::ChecksumContext::new(
-                            checksum,
-                            req_ctx.ranges.clone(),
-                            start_ts,
-                            snap,
-                            req_ctx,
-                        )
-                        .map(|h| h.into_boxed()),
-                    ]
+                    let builder = checksum::ChecksumContext::new(
+                        checksum,
+                        req_ctx.ranges.clone(),
+                        start_ts,
+                        snap,
+                        req_ctx,
+                    )
+                    .map(|h| h.into_boxed())?;
+                    Ok(vec![builder])
                 });
             }
             tp => return Err(box_err!("unsupported tp {}", tp)),
@@ -509,40 +691,117 @@ impl<E: Engine> Endpoint<E> {
         &self,
         req_ctx: ReqContext,
         handler_builder: SubRequestsHandlerBuilder<E::Snap>,
-    ) -> impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>> {
+    ) -> impl Future<
+        Output = Result<JoinAll<impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>>>>,
+    > {
         let priority = req_ctx.context.get_priority();
         let task_id = req_ctx.build_task_id();
-        let _resource_factory = self.resource_tag_factory;
-        let _slow_log_threshold = self.slow_log_threshold;
+        let resource_factory = self.resource_tag_factory.clone();
+        let slow_log_threshold = self.slow_log_threshold;
 
-        let res = self
+        let all_res = self
             .read_pool
             .spawn_handle(
                 Self::handle_reqeust_by_buckets_impl(
                     self.semaphore.clone(),
                     req_ctx,
                     handler_builder,
+                    self.read_pool.clone(),
+                    slow_log_threshold,
+                    resource_factory,
                 ),
                 priority,
                 task_id,
             )
             .map_err(|_| Error::MaxPendingTasksExceeded);
-        async move { res.await? }
+
+        async move { all_res.await? }
     }
 
     async fn handle_reqeust_by_buckets_impl(
         semaphore: Option<Arc<Semaphore>>,
         req_ctx: ReqContext,
         handler_builder: SubRequestsHandlerBuilder<E::Snap>,
-    ) -> Result<MemoryTraceGuard<coppb::Response>> {
+        read_pool: ReadPoolHandle,
+        slow_log_threshold: Duration,
+        resource_factory: ResourceTagFactory,
+    ) -> Result<JoinAll<impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>>>> {
         // now: forget about tracker
 
         let snapshot =
             unsafe { with_tls_engine(|engine| Self::async_snapshot(engine, &req_ctx)) }.await?;
 
-        let mut handlers = handler_builder(snapshot, &req_ctx)?;
+        let handlers = handler_builder(snapshot.clone(), &req_ctx)?;
+        let priority = req_ctx.context.get_priority();
+        // todo: Need we generate different task_id for each subtask?
+        let task_id = req_ctx.build_task_id();
+        let key_ranges: Vec<_> = req_ctx
+            .ranges
+            .iter()
+            .map(|key_range| (key_range.get_start().to_vec(), key_range.get_end().to_vec()))
+            .collect();
 
-        Ok(())
+        let mut all_res = vec![];
+        for handler in handlers {
+            let tracker = Box::new(Tracker::new(req_ctx.clone(), slow_log_threshold));
+            
+            let resource_tag = resource_factory.new_tag_with_key_ranges(&req_ctx.context, key_ranges.clone());
+            let res = read_pool
+                .spawn_handle(
+                    Self::handle_single_subtask(
+                        handler,
+                        semaphore.clone(),
+                        tracker,
+                        snapshot.clone(),
+                    ).in_resource_metering_tag(resource_tag),
+                    priority,
+                    task_id,
+                )
+                .map_err(|_| Error::MaxPendingTasksExceeded);
+
+            all_res.push(async move { res.await? }); // Vec<impl Future<Output = Result<MemoryTraceGuard<Response>, Error>>
+            // let tmp = res.await?; // MapErr<impl Output = Result<Result<MemoryTraceGuard<Response>, Error>, ReadPoolError>>
+            // ===> Result<MemoryTraceGuard<Response>, Error>
+        }
+
+        // Result<JoinAll<impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>>>
+        Ok(join_all(all_res))
+    }
+
+    async fn handle_single_subtask(
+        mut handler: Box<dyn RequestHandler>,
+        semaphore: Option<Arc<Semaphore>>,
+        mut tracker: Box<Tracker>,
+        snapshot: E::Snap,
+    ) -> Result<MemoryTraceGuard<coppb::Response>> {
+        tracker.on_scheduled();
+        tracker.req_ctx.deadline.check()?;
+        tracker.on_snapshot_finished();
+        tracker.buckets = snapshot.ext().get_buckets();
+        let buckets_version = tracker.buckets.as_ref().map_or(0, |b| b.version);
+        tracker.on_begin_all_items();
+
+        let deadline = tracker.req_ctx.deadline;
+        let handle_request_future = check_deadline(handler.handle_request(), deadline);
+        let handle_request_future = track(handle_request_future, &mut tracker);
+
+        let deadline_res = if let Some(semaphore) = &semaphore {
+            limit_concurrency(handle_request_future, semaphore, LIGHT_TASK_THRESHOLD).await
+        } else {
+            handle_request_future.await
+        };
+        let result = deadline_res.map_err(Error::from).and_then(|res| res);
+
+        let mut resp = match result {
+            Ok(resp) => {
+                COPR_RESP_SIZE.inc_by(resp.data.len() as u64);
+                resp
+            }
+            Err(e) => make_error_response(e).into(),
+        };
+        resp.set_latest_buckets_version(buckets_version);
+
+        Ok(resp)
     }
 
     /// Parses and handles a unary request. Returns a future that will never fail. If there are
@@ -555,12 +814,7 @@ impl<E: Engine> Endpoint<E> {
         peer: Option<String>,
     ) -> impl Future<Output = MemoryTraceGuard<coppb::Response>> {
         let result_of_future = self
-            // check memory lock，parse 请求，然后创建builder（closure类型，需要在后续调用中填入snapshot和ctx）
             .parse_request_and_check_memory_locks(req, peer, false)
-            // 上面会返回 builder和req_ctx， 然后在 handle_unary_request 中，初始化 priority, task_id等，将
-            // handle_unary_request_impl(..) 和priority等信息传入 read_poll 执行
-            // handle_unary_request_impl 会真正执行请求：获取snapshot，将上面的builder build成handler，这使得
-            // 可以调用 handler.handle_request() 来处理请求
             .map(|(handler_builder, req_ctx)| self.handle_unary_request(req_ctx, handler_builder));
 
         async move {
@@ -571,6 +825,47 @@ impl<E: Engine> Endpoint<E> {
                     .unwrap_or_else(|e| make_error_response(e).into()),
             }
         }
+    }
+
+    /// Parses and handles a unary request. Returns a future that will never fail. If there are
+    /// errors during parsing or handling, they will be converted into a `Response` as the success
+    /// result of the future.
+    #[inline]
+    pub fn parse_and_handle_request_by_buckets(
+        &self,
+        req: coppb::Request,
+        peer: Option<String>,
+    ) -> impl Future<Output = Vec<MemoryTraceGuard<coppb::Response>>> {
+        let result_of_future = self
+            .parse_request_by_bucket_and_check_memory_locks(req, peer, false)
+            .map(|(handler_builder, req_ctx)| {
+                self.handle_reqeust_by_buckets(req_ctx, handler_builder)
+            });
+
+        let a = async move {
+            match result_of_future {
+                Err(e) => vec![make_error_response(e).into()],
+                Ok(handle_futs) => {
+                    // let handle_futs = handle_futs.await.unwrap_or_else(|e| make_error_response(e));
+
+                    // //unwrap_or_else(|e| make_error_response(e)),
+                    match handle_futs.await {
+                        Err(e) => vec![make_error_response(e).into()],
+                        Ok(handle_futs) => {
+                            let handle_futs_res = handle_futs.await;
+                            let a: Vec<MemoryTraceGuard<coppb::Response>> = handle_futs_res
+                                .into_iter()
+                                .map(|sub_res| {
+                                    sub_res.unwrap_or_else(|e| make_error_response(e).into())
+                                })
+                                .collect();
+                            a
+                        }
+                    }
+                }
+            }
+        };
+        a
     }
 
     /// The real implementation of handling a stream request.
@@ -797,12 +1092,12 @@ fn split_reqs_by_buckets(
         }
     }
 
-    for req in &sub_reqs {
-        println!("Reqs: ");
-        for key_range in req {
-            println!("req: {:?} {:?}", key_range.start, key_range.end);
-        }
-    }
+    // for req in &sub_reqs {
+    //     println!("Reqs: ");
+    //     for key_range in req {
+    //         println!("req: {:?} {:?}", key_range.start, key_range.end);
+    //     }
+    // }
 
     sub_reqs
 }
