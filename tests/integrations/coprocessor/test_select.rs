@@ -2,6 +2,7 @@
 
 use std::{cmp, thread, time::Duration};
 
+use futures::StreamExt;
 use kvproto::coprocessor::{Request, Response};
 use kvproto::kvrpcpb::{Context, IsolationLevel};
 use protobuf::Message;
@@ -1991,6 +1992,7 @@ fn test_buckets() {
     wait_refresh_buckets(0);
 }
 
+use futures::executor::block_on;
 use kvproto::pdpb::CheckPolicy;
 use raftstore::coprocessor::{self, CoprocessorHost};
 use raftstore::store::worker::SplitCheckTask;
@@ -2001,12 +2003,10 @@ use tikv::storage::Engine;
 use tikv_util::config::ReadableSize;
 use tikv_util::worker::Runnable;
 
-const BUCKET_NUMBER_LIMIT: usize = 1024;
-
 #[test]
 fn test_buckets_try() {
     let mut data = vec![];
-    for i in 0..20 {
+    for i in 0..400 {
         data.push((i, Some("name: xxx"), i * 10));
     }
 
@@ -2018,9 +2018,9 @@ fn test_buckets_try() {
         init_data_with_engine_and_commit(ctx.clone(), raft_engine, &product, &data, true);
 
     let cfg = coprocessor::Config {
-        region_max_size: ReadableSize(BUCKET_NUMBER_LIMIT as u64),
+        region_max_size: ReadableSize(1000000_u64), // avoid using Policy::approximate
         enable_region_bucket: true,
-        region_bucket_size: ReadableSize(100_u64), // so that each key below will form a bucket
+        region_bucket_size: ReadableSize(2000_u64),
         ..Default::default()
     };
 
@@ -2046,16 +2046,22 @@ fn test_buckets_try() {
     cluster.refresh_region_bucket_keys(&region, bucket_keys);
 
     let req = DAGSelect::from(&product).build_with(ctx, &[0]);
-    let resp = handle_select_split_by_bucket(&endpoint, req);
-
+    let mut resp = handle_select_split_by_bucket(&endpoint, req);
     println!();
-    for (idx, mut res) in resp.into_iter().enumerate() {
-        let spliter = DAGChunkSpliter::new(res.take_chunks().into(), 3);
-        println!("The {}th subtask results:", idx + 1);
-        for row in spliter {
-            println!("Row: {:?}", row);
+
+    block_on(async move {
+        let mut idx = 1;
+        while let Some(res) = resp.next().await {
+            let mut sel_resp = SelectResponse::default();
+            sel_resp.merge_from_bytes(res.get_data()).unwrap();
+            let spliter = DAGChunkSpliter::new(sel_resp.take_chunks().into(), 3);
+            println!("The {}th subtask results:", idx);
+            for row in spliter {
+                println!("Row: {:?}", row);
+            }
+            idx += 1;
         }
-    }
+    });
 
     // println!("Ground truth:");
     // for (id, name, cnt) in data {

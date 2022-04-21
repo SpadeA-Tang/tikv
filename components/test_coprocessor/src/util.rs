@@ -26,28 +26,31 @@ where
     block_on(copr.parse_and_handle_unary_request(req, None)).consume()
 }
 
-pub fn handle_request_split_by_buckets<E>(copr: &Endpoint<E>, req: Request) -> Vec<Response>
+use futures::channel::mpsc;
+pub fn handle_request_split_by_buckets<E>(
+    copr: &Endpoint<E>,
+    req: Request,
+) -> mpsc::Receiver<Response>
 where
     E: Engine,
 {
-    block_on(copr.parse_and_handle_request_by_buckets(req, None))
+    let (tx, rx) = mpsc::channel::<Response>(10000);
+
+    let res: Vec<Response> = block_on(copr.parse_and_handle_request_by_buckets(req, None, tx))
         .into_iter()
         .map(|mut res| res.consume())
-        .collect()
+        .collect();
+    assert!(res.len() == 0);
+    rx
 }
 
-pub fn handle_select_split_by_bucket<E>(copr: &Endpoint<E>, req: Request) -> Vec<SelectResponse>
+pub fn handle_select_split_by_bucket<E>(copr: &Endpoint<E>, req: Request) -> mpsc::Receiver<Response>
 where
     E: Engine,
 {
-    let resp = handle_request_split_by_buckets(copr, req);
-    resp.into_iter()
-        .map(|res| {
-            let mut sel_resp = SelectResponse::default();
-            sel_resp.merge_from_bytes(res.get_data()).unwrap();
-            sel_resp
-        })
-        .collect()
+    let rx = handle_request_split_by_buckets(copr, req);
+    rx
+
     // assert!(!resp.get_data().is_empty(), "{:?}", resp);
     // let mut sel_resp = SelectResponse::default();
     // sel_resp.merge_from_bytes(resp.get_data()).unwrap();

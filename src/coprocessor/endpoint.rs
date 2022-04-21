@@ -691,9 +691,8 @@ impl<E: Engine> Endpoint<E> {
         &self,
         req_ctx: ReqContext,
         handler_builder: SubRequestsHandlerBuilder<E::Snap>,
-    ) -> impl Future<
-        Output = Result<JoinAll<impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>>>>,
-    > {
+        sender: mpsc::Sender<coppb::Response>,
+    ) -> impl Future<Output = Result<JoinAll<impl Future<Output = Result<()>>>>> {
         let priority = req_ctx.context.get_priority();
         let task_id = req_ctx.build_task_id();
         let resource_factory = self.resource_tag_factory.clone();
@@ -709,6 +708,7 @@ impl<E: Engine> Endpoint<E> {
                     self.read_pool.clone(),
                     slow_log_threshold,
                     resource_factory,
+                    sender,
                 ),
                 priority,
                 task_id,
@@ -725,9 +725,9 @@ impl<E: Engine> Endpoint<E> {
         read_pool: ReadPoolHandle,
         slow_log_threshold: Duration,
         resource_factory: ResourceTagFactory,
-    ) -> Result<JoinAll<impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>>>> {
+        sender: mpsc::Sender<coppb::Response>,
+    ) -> Result<JoinAll<impl Future<Output = Result<()>>>> {
         // now: forget about tracker
-
         let snapshot =
             unsafe { with_tls_engine(|engine| Self::async_snapshot(engine, &req_ctx)) }.await?;
 
@@ -744,8 +744,9 @@ impl<E: Engine> Endpoint<E> {
         let mut all_res = vec![];
         for handler in handlers {
             let tracker = Box::new(Tracker::new(req_ctx.clone(), slow_log_threshold));
-            
-            let resource_tag = resource_factory.new_tag_with_key_ranges(&req_ctx.context, key_ranges.clone());
+
+            let resource_tag =
+                resource_factory.new_tag_with_key_ranges(&req_ctx.context, key_ranges.clone());
             let res = read_pool
                 .spawn_handle(
                     Self::handle_single_subtask(
@@ -753,13 +754,17 @@ impl<E: Engine> Endpoint<E> {
                         semaphore.clone(),
                         tracker,
                         snapshot.clone(),
-                    ).in_resource_metering_tag(resource_tag),
+                        sender.clone(),
+                    )
+                    .in_resource_metering_tag(resource_tag),
                     priority,
                     task_id,
                 )
                 .map_err(|_| Error::MaxPendingTasksExceeded);
-
-            all_res.push(async move { res.await? }); // Vec<impl Future<Output = Result<MemoryTraceGuard<Response>, Error>>
+            let res = res.await?;
+            if let Err(e) = res {
+                all_res.push(async move { Err(e) }); // Vec<impl Future<Output = Result<MemoryTraceGuard<Response>, Error>>
+            }
             // let tmp = res.await?; // MapErr<impl Output = Result<Result<MemoryTraceGuard<Response>, Error>, ReadPoolError>>
             // ===> Result<MemoryTraceGuard<Response>, Error>
         }
@@ -773,7 +778,8 @@ impl<E: Engine> Endpoint<E> {
         semaphore: Option<Arc<Semaphore>>,
         mut tracker: Box<Tracker>,
         snapshot: E::Snap,
-    ) -> Result<MemoryTraceGuard<coppb::Response>> {
+        mut sender: mpsc::Sender<coppb::Response>,
+    ) -> Result<()> {
         tracker.on_scheduled();
         tracker.req_ctx.deadline.check()?;
         tracker.on_snapshot_finished();
@@ -801,7 +807,8 @@ impl<E: Engine> Endpoint<E> {
         };
         resp.set_latest_buckets_version(buckets_version);
 
-        Ok(resp)
+        // todo: It this unwrap safe
+        Ok(sender.send(resp.consume()).await.unwrap())
     }
 
     /// Parses and handles a unary request. Returns a future that will never fail. If there are
@@ -835,11 +842,12 @@ impl<E: Engine> Endpoint<E> {
         &self,
         req: coppb::Request,
         peer: Option<String>,
+        sender: mpsc::Sender<coppb::Response>,
     ) -> impl Future<Output = Vec<MemoryTraceGuard<coppb::Response>>> {
         let result_of_future = self
             .parse_request_by_bucket_and_check_memory_locks(req, peer, false)
             .map(|(handler_builder, req_ctx)| {
-                self.handle_reqeust_by_buckets(req_ctx, handler_builder)
+                self.handle_reqeust_by_buckets(req_ctx, handler_builder, sender)
             });
 
         let a = async move {
@@ -851,12 +859,16 @@ impl<E: Engine> Endpoint<E> {
                     // //unwrap_or_else(|e| make_error_response(e)),
                     match handle_futs.await {
                         Err(e) => vec![make_error_response(e).into()],
-                        Ok(handle_futs) => {
-                            let handle_futs_res = handle_futs.await;
-                            let a: Vec<MemoryTraceGuard<coppb::Response>> = handle_futs_res
+                        Ok(handle_futs_err) => {
+                            let handle_futs_err_res = handle_futs_err.await;
+                            let a: Vec<MemoryTraceGuard<coppb::Response>> = handle_futs_err_res
                                 .into_iter()
                                 .map(|sub_res| {
-                                    sub_res.unwrap_or_else(|e| make_error_response(e).into())
+                                    if let Err(e) = sub_res {
+                                        make_error_response(e).into()
+                                    } else {
+                                        unreachable!()
+                                    }
                                 })
                                 .collect();
                             a
