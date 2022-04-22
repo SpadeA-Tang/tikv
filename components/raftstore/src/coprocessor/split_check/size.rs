@@ -127,6 +127,7 @@ where
         mut policy: CheckPolicy,
     ) {
         let region = ctx.region();
+        let region = ctx.region();
         let region_id = region.get_id();
         let region_size = match get_region_approximate_size(
             engine,

@@ -761,8 +761,7 @@ impl<E: Engine> Endpoint<E> {
                     task_id,
                 )
                 .map_err(|_| Error::MaxPendingTasksExceeded);
-            let res = res.await?;
-            if let Err(e) = res {
+            if let Err(e) = res.await? {
                 all_res.push(async move { Err(e) }); // Vec<impl Future<Output = Result<MemoryTraceGuard<Response>, Error>>
             }
             // let tmp = res.await?; // MapErr<impl Output = Result<Result<MemoryTraceGuard<Response>, Error>, ReadPoolError>>
@@ -798,6 +797,17 @@ impl<E: Engine> Endpoint<E> {
         };
         let result = deadline_res.map_err(Error::from).and_then(|res| res);
 
+        // There might be errors when handling requests. In this case, we still need its
+        // execution metrics.
+        let mut exec_summary = ExecSummary::default();
+        handler.collect_scan_summary(&mut exec_summary);
+        tracker.collect_scan_process_time(exec_summary);
+        let mut storage_stats = Statistics::default();
+        handler.collect_scan_statistics(&mut storage_stats);
+        tracker.collect_storage_statistics(storage_stats);
+        let (exec_details, exec_details_v2) = tracker.get_exec_details();
+        tracker.on_finish_all_items();
+
         let mut resp = match result {
             Ok(resp) => {
                 COPR_RESP_SIZE.inc_by(resp.data.len() as u64);
@@ -805,6 +815,8 @@ impl<E: Engine> Endpoint<E> {
             }
             Err(e) => make_error_response(e).into(),
         };
+        resp.set_exec_details(exec_details);
+        resp.set_exec_details_v2(exec_details_v2);
         resp.set_latest_buckets_version(buckets_version);
 
         // todo: It this unwrap safe

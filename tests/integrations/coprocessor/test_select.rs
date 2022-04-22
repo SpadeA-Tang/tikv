@@ -2006,7 +2006,7 @@ use tikv_util::worker::Runnable;
 #[test]
 fn test_buckets_try() {
     let mut data = vec![];
-    for i in 0..400 {
+    for i in 0..1000 {
         data.push((i, Some("name: xxx"), i * 10));
     }
 
@@ -2018,7 +2018,7 @@ fn test_buckets_try() {
         init_data_with_engine_and_commit(ctx.clone(), raft_engine, &product, &data, true);
 
     let cfg = coprocessor::Config {
-        region_max_size: ReadableSize(1000000_u64), // avoid using Policy::approximate
+        region_max_size: ReadableSize(10000000_u64), // avoid using Policy::approximate
         enable_region_bucket: true,
         region_bucket_size: ReadableSize(2000_u64),
         ..Default::default()
@@ -2046,7 +2046,9 @@ fn test_buckets_try() {
     cluster.refresh_region_bucket_keys(&region, bucket_keys);
 
     let req = DAGSelect::from(&product).build_with(ctx, &[0]);
+    let time = SystemTime::now();
     let mut resp = handle_select_split_by_bucket(&endpoint, req);
+
     println!();
 
     block_on(async move {
@@ -2062,12 +2064,65 @@ fn test_buckets_try() {
             idx += 1;
         }
     });
+    println!("Time spend for request: {}", time.elapsed().unwrap().as_millis());
+}
 
-    // println!("Ground truth:");
-    // for (id, name, cnt) in data {
-    //     let name_datum = name.map(|s| s.as_bytes()).into();
-    //     println!("Row: {:?}", &[Datum::I64(id), name_datum, cnt.into()]);
-    // }
+use std::time::SystemTime;
+
+#[test]
+fn test_unary() {
+    let mut data = vec![];
+    for i in 0..10000 {
+        data.push((i, Some("name: xxx"), i * 10));
+    }
+
+    let product = ProductTable::new();
+    let (mut cluster, raft_engine, ctx) = new_raft_engine(1, "");
+
+    let engine = raft_engine.kv_engine();
+    let (_, endpoint) =
+        init_data_with_engine_and_commit(ctx.clone(), raft_engine, &product, &data, true);
+
+    let cfg = coprocessor::Config {
+        region_max_size: ReadableSize(10000000_u64), // avoid using Policy::approximate
+        enable_region_bucket: true,
+        region_bucket_size: ReadableSize(200000_u64),
+        ..Default::default()
+    };
+
+    let (tx, rx) = mpsc::sync_channel(100);
+    let mut runnable = SplitCheckRunner::new(engine, tx.clone(), CoprocessorHost::new(tx, cfg));
+
+    runnable.run(SplitCheckTask::split_check(
+        cluster.get_region("".as_bytes()).clone(),
+        false,
+        CheckPolicy::Scan,
+    ));
+    let bucket_keys = print_bucket_info(&rx);
+
+    println!("Split key");
+    for key in &bucket_keys {
+        println!("{:?}", key);
+    }
+    println!();
+
+    let mut bucket_key = product.get_record_range_all().get_start().to_owned();
+    bucket_key.push(0);
+    let region = cluster.get_region(&bucket_key);
+    cluster.refresh_region_bucket_keys(&region, bucket_keys);
+
+    let req = DAGSelect::from(&product).build_with(ctx, &[0]);
+
+    let time = SystemTime::now();
+    let mut resp = handle_select(&endpoint, req);
+    println!();
+
+    let spliter = DAGChunkSpliter::new(resp.take_chunks().into(), 3);
+    for row in spliter {
+        println!("Row: {:?}", row);
+    }
+
+    println!("Time spend for request: {}", time.elapsed().unwrap().as_millis());
 }
 
 use engine_test::kv::KvTestEngine;
