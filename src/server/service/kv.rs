@@ -1,9 +1,6 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
 // #[PerformanceCriticalPath]: Tikv gRPC APIs implementation
-use std::sync::Arc;
-use tikv_util::time::{duration_to_ms, duration_to_sec, Instant};
-
 use super::batch::{BatcherBuilder, ReqBatcher};
 use crate::coprocessor::Endpoint;
 use crate::server::gc_worker::GcWorker;
@@ -25,6 +22,7 @@ use crate::storage::{
 use crate::{coprocessor_v2, log_net_error};
 use crate::{forward_duplex, forward_unary};
 use fail::fail_point;
+use futures::channel::mpsc;
 use futures::compat::Future01CompatExt;
 use futures::future::{self, Future, FutureExt, TryFutureExt};
 use futures::sink::SinkExt;
@@ -46,10 +44,12 @@ use raftstore::store::memory::{MEMTRACE_RAFT_ENTRIES, MEMTRACE_RAFT_MESSAGES};
 use raftstore::store::CheckLeaderTask;
 use raftstore::store::{Callback, CasualMessage, RaftCmdExtraOpts};
 use raftstore::{DiscardReason, Error as RaftStoreError, Result as RaftStoreResult};
+use std::sync::Arc;
 use tikv_alloc::trace::MemoryTraceGuard;
 use tikv_util::future::{paired_future_callback, poll_future_notify};
 use tikv_util::mpsc::batch::{unbounded, BatchCollector, BatchReceiver, Sender};
 use tikv_util::sys::memory_usage_reaches_high_water;
+use tikv_util::time::{duration_to_ms, duration_to_sec, Instant};
 use tikv_util::worker::Scheduler;
 use txn_types::{self, Key};
 
@@ -191,7 +191,7 @@ macro_rules! handle_request {
         }
     }
 }
-
+use futures::{pin_mut, select};
 impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager> Tikv for Service<T, E, L> {
     handle_request!(kv_get, future_get, GetRequest, GetResponse);
     handle_request!(kv_scan, future_scan, ScanRequest, ScanResponse);
@@ -368,6 +368,44 @@ impl<T: RaftStoreRouter<E::Local> + 'static, E: Engine, L: LockManager> Tikv for
         .map(|_| ());
 
         ctx.spawn(task);
+    }
+
+    fn coprocessor_bucket(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: Request,
+        mut sink: ServerStreamingSink<Response>,
+    ) {
+        let begin_instant = Instant::now_coarse();
+        let (tx, mut rx) = mpsc::channel::<Response>(10000000);
+
+        let res = self.copr.parse_and_handle_request_by_buckets(req, None, tx);
+        let future = async move {
+            let res = res.fuse();
+            pin_mut!(res);
+            select! {
+                resp = rx.next() => {
+                    if let Some(resp) = resp {
+                        sink.send((
+                            resp,
+                            WriteFlags::default().buffer_hint(true),
+                        )).await;
+                    } else {
+                        
+                    }
+                }
+                res = res => {
+                    for r in res {
+                        sink.send((
+                            r,
+                            WriteFlags::default().buffer_hint(true),
+                        )).await;
+                    }
+                }
+            }
+        };
+
+        ctx.spawn(future);
     }
 
     fn raw_coprocessor(

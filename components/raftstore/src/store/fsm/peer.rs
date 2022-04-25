@@ -4735,6 +4735,7 @@ where
         };
         meta.keys.insert(0, region.get_start_key().to_vec());
         meta.keys.push(region.get_end_key().to_vec());
+        info!("Bucket key for region {} is updated where bucket_key.len = {}", region.get_id(), meta.keys.len());
         let stats = new_bucket_stats(&meta);
         let meta = Arc::new(meta);
         let region_buckets = BucketStat::new(meta.clone(), stats);

@@ -33,7 +33,7 @@ use tikv_util::codec::number::decode_u64;
 use tikv_util::lru::LruCache;
 use tikv_util::time::monotonic_raw_now;
 use tikv_util::time::{Instant, ThreadReadId};
-use tikv_util::{debug, error};
+use tikv_util::{debug, error, info};
 
 use super::metrics::*;
 use crate::store::fsm::store::StoreMeta;
@@ -305,11 +305,11 @@ impl ReadDelegate {
                     return true;
                 } else {
                     metrics.rejected_by_lease_expire += 1;
-                    debug!("rejected by lease expire"; "tag" => &self.tag);
+                    info!("rejected by lease expire"; "tag" => &self.tag);
                 }
             } else {
                 metrics.rejected_by_term_mismatch += 1;
-                debug!("rejected by term mismatch"; "tag" => &self.tag);
+                info!("rejected by term mismatch"; "tag" => &self.tag);
             }
         }
 
@@ -479,7 +479,7 @@ where
     }
 
     fn redirect(&mut self, mut cmd: RaftCommand<E::Snapshot>) {
-        debug!("localreader redirects command"; "command" => ?cmd);
+        info!("localreader redirects command"; "command" => ?cmd);
         let region_id = cmd.request.get_header().get_region_id();
         let mut err = errorpb::Error::default();
         match ProposalRouter::send(&self.router, cmd) {
@@ -560,7 +560,7 @@ where
 
         if let Err(e) = util::check_store_id(req, store_id) {
             self.metrics.rejected_by_store_id_mismatch += 1;
-            debug!("rejected by store id not match"; "err" => %e);
+            info!("rejected by store id not match"; "err" => %e);
             return Err(e);
         }
 
@@ -570,7 +570,7 @@ where
             Some(d) => d,
             None => {
                 self.metrics.rejected_by_no_region += 1;
-                debug!("rejected by no region"; "region_id" => region_id);
+                info!("rejected by no region"; "region_id" => region_id);
                 return Ok(None);
             }
         };
@@ -585,7 +585,7 @@ where
 
         // Check term.
         if let Err(e) = util::check_term(req, delegate.term) {
-            debug!(
+            info!(
                 "check term";
                 "delegate_term" => delegate.term,
                 "header_term" => req.get_header().get_term(),
@@ -598,7 +598,7 @@ where
         if util::check_region_epoch(req, &delegate.region, false).is_err() {
             self.metrics.rejected_by_epoch += 1;
             // Stale epoch, redirect it to raftstore to get the latest region.
-            debug!("rejected by epoch not match"; "tag" => &delegate.tag);
+            info!("rejected by epoch not match"; "tag" => &delegate.tag);
             return Ok(None);
         }
 

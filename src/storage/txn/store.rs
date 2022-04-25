@@ -58,7 +58,8 @@ pub trait Scanner: Send {
         let mut row_count = 0;
         let mut results = Vec::with_capacity(limit);
         while results.len() < limit {
-            match self.next() {
+            let value = self.next();
+            match value {
                 Ok(Some((k, v))) => {
                     if sample_step > 0 {
                         row_count += 1;

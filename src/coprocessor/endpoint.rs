@@ -855,29 +855,29 @@ impl<E: Engine> Endpoint<E> {
         req: coppb::Request,
         peer: Option<String>,
         sender: mpsc::Sender<coppb::Response>,
-    ) -> impl Future<Output = Vec<MemoryTraceGuard<coppb::Response>>> {
+    ) -> impl Future<Output = Vec<coppb::Response>> {
         let result_of_future = self
             .parse_request_by_bucket_and_check_memory_locks(req, peer, false)
             .map(|(handler_builder, req_ctx)| {
-                self.handle_reqeust_by_buckets(req_ctx, handler_builder, sender)
+                self.handle_reqeust_by_buckets(req_ctx, handler_builder, sender.clone())
             });
 
-        let a = async move {
+        let resps = async move {
             match result_of_future {
-                Err(e) => vec![make_error_response(e).into()],
+                Err(e) => vec![make_error_response(e)],
                 Ok(handle_futs) => {
                     // let handle_futs = handle_futs.await.unwrap_or_else(|e| make_error_response(e));
 
                     // //unwrap_or_else(|e| make_error_response(e)),
                     match handle_futs.await {
-                        Err(e) => vec![make_error_response(e).into()],
+                        Err(e) => vec![make_error_response(e)],
                         Ok(handle_futs_err) => {
                             let handle_futs_err_res = handle_futs_err.await;
-                            let a: Vec<MemoryTraceGuard<coppb::Response>> = handle_futs_err_res
+                            let a: Vec<coppb::Response> = handle_futs_err_res
                                 .into_iter()
                                 .map(|sub_res| {
                                     if let Err(e) = sub_res {
-                                        make_error_response(e).into()
+                                        make_error_response(e)
                                     } else {
                                         unreachable!()
                                     }
@@ -889,7 +889,7 @@ impl<E: Engine> Endpoint<E> {
                 }
             }
         };
-        a
+        resps
     }
 
     /// The real implementation of handling a stream request.

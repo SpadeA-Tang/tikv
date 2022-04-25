@@ -77,6 +77,36 @@ impl<'a, E: Engine> Insert<'a, E> {
         self.store.put(ctx, kvs);
         handle.i64()
     }
+
+    pub fn decode(self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let handle = self
+            .values
+            .get(&self.table.handle_id)
+            .cloned()
+            .unwrap_or_else(|| Datum::I64(next_id()));
+        // format: "t" + table.id + "_r" + handle.i64()
+        let key = table::encode_row_key(self.table.id, handle.i64());
+
+        // 将ids和values zip成 (id, value) 的pairs，然后插入到一个vec中
+        // 最后调用 datum::encode_value 将该vec encod 成 Vec<u8>
+        let ids: Vec<_> = self.values.keys().cloned().collect();
+        let values: Vec<_> = self.values.values().cloned().collect();
+        let value = table::encode_row(&mut EvalContext::default(), values, &ids).unwrap();
+
+        let mut kvs = vec![(key, value)];
+
+        // kvs 包括： 第一个元素的key是 table id和handle的encoding，value是所有values和相应id的encoding
+        // 剩下的按照索引归类（table.idxs 代表的是 不同类别的 index， 比如0代表primary key），
+        // 将隶属于同一索引类型的拿出来（就是下面的v），encode后，将其和索引，table id等encode成idx_key，然后放入到kvs中
+        for (&id, idxs) in &self.table.idxs {
+            let mut v: Vec<_> = idxs.iter().map(|id| self.values[id].clone()).collect();
+            v.push(handle.clone());
+            let encoded = datum::encode_key(&mut EvalContext::default(), &v).unwrap();
+            let idx_key = table::encode_index_seek_key(self.table.id, id, &encoded);
+            kvs.push((idx_key, vec![0]));
+        }
+        kvs
+    }
 }
 
 pub struct Delete<'a, E: Engine> {

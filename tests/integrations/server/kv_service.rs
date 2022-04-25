@@ -10,6 +10,7 @@ use futures::{executor::block_on, future, SinkExt, StreamExt, TryStreamExt};
 use grpcio::*;
 use grpcio_health::proto::HealthCheckRequest;
 use grpcio_health::*;
+use raftstore::coprocessor;
 use tempfile::Builder;
 
 use kvproto::{
@@ -29,7 +30,10 @@ use pd_client::PdClient;
 use raftstore::coprocessor::CoprocessorHost;
 use raftstore::store::{fsm::store::StoreMeta, AutoSplitController, SnapManager};
 use resource_metering::CollectorRegHandle;
+use test_coprocessor::ProductTable;
+use test_coprocessor::Table;
 use test_raftstore::*;
+use tidb_query_datatype::codec::Datum;
 use tikv::config::QuotaConfig;
 use tikv::coprocessor::REQ_TYPE_DAG;
 use tikv::import::Config as ImportConfig;
@@ -279,7 +283,7 @@ fn test_mvcc_basic() {
         ctx.clone(),
         vec![mutation],
         k.clone(),
-        prewrite_start_version,   // timestamp : 1
+        prewrite_start_version, // timestamp : 1
     );
 
     // Commit
@@ -289,8 +293,8 @@ fn test_mvcc_basic() {
         &client,
         ctx.clone(),
         vec![k.clone()],
-        prewrite_start_version,   // timestamp : 1
-        commit_version,           // timestamp : 2
+        prewrite_start_version, // timestamp : 1
+        commit_version,         // timestamp : 2
         commit_version,
     );
 
@@ -2015,4 +2019,74 @@ fn test_storage_with_quota_limiter_disable() {
     must_kv_prewrite(&client, ctx, vec![mutation], k, prewrite_start_version);
 
     assert!(begin.elapsed() < Duration::from_millis(800));
+}
+
+use test_coprocessor::Store;
+fn init_data_into_cluster(
+    client: &TikvClient,
+    ctx: Context,
+    vals: &[(i64, Option<&str>, i64)],
+    tbl: &ProductTable,
+) {
+    let mut ts = 0;
+    for &(id, name, count) in vals {
+        ts += 1;
+        let mut store = Store::default();
+        let kvs = store.insert_into(tbl)
+            // 这里在 Insert.values 里面 插入 (col.id, value: Datum)，col.id 通过 table.index_by_name 获取 idx, 然后从 table.columns[idx] 中获取colum的信息
+            .set(&tbl["id"], Datum::I64(id)) 
+            .set(&tbl["name"], name.map(str::as_bytes).into())
+            .set(&tbl["count"], Datum::I64(count))
+            .decode();
+        let prewrite_start_version = ts;
+        let mut mutations = vec![];
+        let mut keys = vec![];
+        for (key, value) in kvs {
+            let mut mutation = Mutation::default();
+            keys.push(key.clone());
+            mutation.set_key(key);
+            mutation.set_value(value);
+            mutations.push(mutation);
+        }
+        let pk = keys[0].clone();
+        must_kv_prewrite(client, ctx.clone(), mutations, pk, prewrite_start_version);
+
+        ts += 1;
+        let commit_version = ts;
+        must_kv_commit(
+            client,
+            ctx.clone(),
+            keys,
+            prewrite_start_version, // timestamp : 1
+            commit_version,         // timestamp : 2
+            commit_version,
+        );
+    }
+}
+
+// This test is for server side streaming
+#[test]
+fn test_coprocessor_bucket() {
+    let mut data = vec![];
+    let (_cluster, client, ctx) = must_new_cluster_and_kv_client_with_config(|configure| {
+        configure.cfg.tikv.coprocessor = coprocessor::Config {
+            region_max_size: ReadableSize(10000000_u64), // avoid using Policy::approximate
+            enable_region_bucket: true,
+            region_bucket_size: ReadableSize(200_u64),
+            ..Default::default()
+        }
+    });
+    for i in 0..10 {
+        data.push((i, Some("name: xxx"), i * 10));
+    }
+    let product = ProductTable::new();
+    init_data_into_cluster(&client, ctx.clone(), &data, &product);
+    let mut req = Request::default();
+    req.set_tp(REQ_TYPE_DAG);
+    let mut res = client.coprocessor_bucket(&req).unwrap();
+    block_on(async {
+        while let Some(resp) = res.next().await {
+            println!("{:?}", resp);
+        }
+    })
 }

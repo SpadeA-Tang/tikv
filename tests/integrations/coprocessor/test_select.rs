@@ -2006,7 +2006,7 @@ use tikv_util::worker::Runnable;
 #[test]
 fn test_buckets_try() {
     let mut data = vec![];
-    for i in 0..1000 {
+    for i in 0..10 {
         data.push((i, Some("name: xxx"), i * 10));
     }
 
@@ -2020,7 +2020,7 @@ fn test_buckets_try() {
     let cfg = coprocessor::Config {
         region_max_size: ReadableSize(10000000_u64), // avoid using Policy::approximate
         enable_region_bucket: true,
-        region_bucket_size: ReadableSize(2000_u64),
+        region_bucket_size: ReadableSize(200_u64),
         ..Default::default()
     };
 

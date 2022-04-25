@@ -34,12 +34,9 @@ pub fn handle_request_split_by_buckets<E>(
 where
     E: Engine,
 {
-    let (tx, rx) = mpsc::channel::<Response>(10000);
+    let (tx, rx) = mpsc::channel::<Response>(10000000);
 
-    let res: Vec<Response> = block_on(copr.parse_and_handle_request_by_buckets(req, None, tx))
-        .into_iter()
-        .map(|mut res| res.consume())
-        .collect();
+    let res = block_on(copr.parse_and_handle_request_by_buckets(req, None, tx));
     assert!(res.len() == 0);
     rx
 }

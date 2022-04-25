@@ -8,6 +8,7 @@ use std::process;
 use clap::{crate_authors, App, Arg};
 use server::setup::{ensure_no_unrecognized_config, validate_and_persist_config};
 use tikv::config::TiKvConfig;
+use tikv_util::config::ReadableSize;
 
 fn main() {
     let build_timestamp = option_env!("TIKV_BUILD_TIME");
@@ -176,7 +177,6 @@ fn main() {
                 );
             })
         });
-
     server::setup::overwrite_config_with_cmd_args(&mut config, &matches);
     config.logger_compatible_adjust();
 
@@ -186,6 +186,9 @@ fn main() {
         println!("config check successful");
         process::exit(0)
     }
+    config.coprocessor.enable_region_bucket = true;
+    config.coprocessor.region_bucket_size = ReadableSize(2000_u64);
+    config.coprocessor.region_max_size = ReadableSize(1000000000_u64);
 
     server::server::run_tikv(config);
 }
