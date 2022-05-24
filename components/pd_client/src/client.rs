@@ -991,8 +991,24 @@ impl PdClient for RpcClient {
         buckets.set_stats(bucket_stat.stats.clone());
         let mut req = pdpb::ReportBucketsRequest::default();
         req.set_header(self.header());
+        let buckets_copy = buckets.clone();
         req.set_buckets(buckets);
         req.set_region_epoch(bucket_stat.meta.region_epoch.clone());
+
+        warn!("");
+        warn!("");
+        warn!("`````````````````report_region_buckets";
+            "RegionID" => bucket_stat.meta.region_id,
+            "Bucket version" => bucket_stat.meta.version,
+        );
+        for key in &buckets_copy.keys {
+            warn!(
+                "";
+                "The bucket key" => log_wrappers::Value::key(&key),
+            );
+        }
+        warn!("");
+        warn!("");
 
         let executor = |client: &Client, req: pdpb::ReportBucketsRequest| {
             let mut inner = client.inner.wl();

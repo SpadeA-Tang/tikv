@@ -90,6 +90,10 @@ impl ReadableSize {
         ReadableSize(count * KIB)
     }
 
+    pub const fn b(count: u64) -> ReadableSize {
+        ReadableSize(count * B)
+    }
+
     pub const fn mb(count: u64) -> ReadableSize {
         ReadableSize(count * MIB)
     }

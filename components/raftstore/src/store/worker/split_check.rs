@@ -249,6 +249,23 @@ where
         region: &Region,
         bucket_ranges: &Vec<BucketRange>,
     ) {
+        warn!("");
+        warn!("");
+        warn!("----------------Before filtering");
+        warn!(
+            "Region:";
+            "region start" => log_wrappers::Value::key(&region.start_key),
+            "region end" => log_wrappers::Value::key(&region.end_key),
+        );
+        for bucket in &*buckets {
+            for key in &bucket.keys {
+                let key = strip_timestamp_if_exists(key.clone());
+                warn!(
+                    "";
+                    "The bucket key" => log_wrappers::Value::key(&key),
+                );
+            }
+        }
         for (mut bucket, bucket_range) in &mut buckets.iter_mut().zip(bucket_ranges) {
             let mut bucket_region = region.clone();
             bucket_region.set_start_key(bucket_range.0.clone());
@@ -271,6 +288,13 @@ where
                         );
                         Some(key)
                     } else {
+                        warn!(
+                            "The key is skipped";
+                            "key" => log_wrappers::Value::key(&key),
+                            "region_start" => log_wrappers::Value::key(&region.start_key),
+                            "region_end" => log_wrappers::Value::key(&region.end_key),
+                            "index" => i,
+                        );
                         None
                     }
                 })
@@ -291,6 +315,17 @@ where
                 .collect::<Vec<_>>();
             bucket.keys = adjusted_keys;
         }
+        warn!("----------------After filtering");
+        for bucket in &*buckets {
+            for key in &bucket.keys {
+                warn!(
+                    "";
+                    "The bucket key" => log_wrappers::Value::key(&key),
+                );
+            }
+        }
+        warn!("");
+        warn!("");
     }
 
     fn refresh_region_buckets(

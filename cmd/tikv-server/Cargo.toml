@@ -36,6 +36,7 @@ clap = "2.32"
 server = { path = "../../components/server", default-features = false }
 tikv = { path = "../../", default-features = false }
 toml = "0.5"
+tikv_util = { path = "../../components/tikv_util", default-features = false }
 
 [build-dependencies]
 cc = "1.0"

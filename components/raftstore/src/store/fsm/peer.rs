@@ -5200,6 +5200,30 @@ where
         bucket_ranges: Option<Vec<BucketRange>>,
         _cb: Callback<EK::Snapshot>,
     ) {
+        let v = self
+            .fsm
+            .peer
+            .region_buckets
+            .as_ref()
+            .map(|b| b.meta.version)
+            .unwrap_or_default();
+        warn!("");
+        warn!("");
+        warn!("++++++++++++On_refresh_region_buckets";
+            "RegionID" => self.region_id(),
+            "Current version" => v,
+        );
+        for bucket in &*buckets {
+            for key in &bucket.keys {
+                warn!(
+                    "";
+                    "The bucket key" => log_wrappers::Value::key(&key),
+                );
+            }
+        }
+        warn!("");
+        warn!("");
+
         #[cfg(any(test, feature = "testexport"))]
         let test_only_callback = |_callback, region_buckets| {
             if let Callback::Test { cb } = _callback {
@@ -5337,7 +5361,32 @@ where
             RegionChangeEvent::UpdateBuckets(buckets_count),
             self.fsm.peer.get_role(),
         );
-        let old_region_buckets = self.fsm.peer.region_buckets.replace(region_buckets);
+
+        let old_region_buckets = self.fsm.peer.region_buckets.replace(region_buckets.clone());
+        warn!("");
+        warn!("Begin to update the bucket";
+            "RegionID" => self.region_id(),
+            "Current version" => region_buckets.meta.version,
+        );
+        warn!("Old bucket");
+        if let Some(old_bucket) = old_region_buckets.clone() {
+            for key in &old_bucket.meta.keys {
+                warn!(
+                    "";
+                    "The bucket key" => log_wrappers::Value::key(&key),
+                );
+            }
+        }
+
+        warn!("New bucket");
+        for key in &region_buckets.meta.keys {
+            warn!(
+                "";
+                "The bucket key" => log_wrappers::Value::key(&key),
+            );
+        }
+        warn!("");
+        warn!("");
         self.fsm.peer.last_region_buckets = old_region_buckets;
         let mut store_meta = self.ctx.store_meta.lock().unwrap();
         if let Some(reader) = store_meta.readers.get_mut(&self.fsm.region_id()) {

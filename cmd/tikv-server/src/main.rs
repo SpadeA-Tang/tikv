@@ -2,11 +2,12 @@
 
 #![feature(proc_macro_hygiene)]
 
-use std::{path::Path, process};
+use std::{path::Path, process, time::Duration};
 
 use clap::{crate_authors, App, Arg};
 use server::setup::{ensure_no_unrecognized_config, validate_and_persist_config};
 use tikv::config::TiKvConfig;
+use tikv_util::config::ReadableSize;
 
 fn main() {
     let build_timestamp = option_env!("TIKV_BUILD_TIME");
@@ -185,6 +186,9 @@ fn main() {
         println!("config check successful");
         process::exit(0)
     }
+
+    config.coprocessor.region_bucket_size = ReadableSize::b(20);
+    config.coprocessor.enable_region_bucket = true;
 
     server::server::run_tikv(config);
 }
