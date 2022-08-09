@@ -1,4 +1,4 @@
-// Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
+// Copyright 2020 TiKV Project Authors. Licensed under Apache-2&.0.
 
 use std::{
     str::FromStr,
@@ -226,6 +226,10 @@ macro_rules! request_imp {
         debug_assert!($amount > 0);
         let priority_idx = $priority as usize;
         let cached_bytes_per_epoch = $limiter.bytes_per_epoch[priority_idx].load(Ordering::Relaxed);
+        println!(
+            "Pri {:?} Request: amout {}  cached_bytes_per_epoch {}",
+            $priority, $amount, cached_bytes_per_epoch
+        );
         // Flow control is disabled when limit is zero.
         if cached_bytes_per_epoch == 0 {
             return $amount;
@@ -233,6 +237,10 @@ macro_rules! request_imp {
         let mut amount = std::cmp::min($amount, cached_bytes_per_epoch);
         let bytes_through =
             $limiter.bytes_through[priority_idx].fetch_add(amount, Ordering::Relaxed) + amount;
+        println!(
+            "Pri {:?} Current bytes_through after request {} ",
+            $priority, bytes_through
+        );
         // We prefer not to partially return only a portion of requested bytes.
         if bytes_through <= cached_bytes_per_epoch
             || !$limiter.strict && $priority == IoPriority::High
@@ -257,6 +265,10 @@ macro_rules! request_imp {
             // Enqueue itself by adding to pending_bytes, whose current value denotes a
             // position of logical queue to wait in.
             locked.pending_bytes[priority_idx] += remains;
+            println!(
+                "Pri {:?} pending bytes {}",
+                $priority, locked.pending_bytes[priority_idx]
+            );
             // Calculate wait duration by queue_len / served_per_epoch.
             let wait = if locked.next_refill_time <= now {
                 $limiter.refill(&mut locked, now);
@@ -291,6 +303,7 @@ macro_rules! request_imp {
             }
         };
         tls_collect_rate_limiter_request_wait($priority.as_str(), wait);
+        println!("Pri {:?} Wait {:?} amount {}", $priority, wait, amount);
         do_sleep!(wait, $mode);
         amount
     }};
@@ -353,6 +366,7 @@ impl PriorityBasedIoRateLimiter {
     /// - Highest priority IO alone must not exceed global threshold (in strict
     ///   mode).
     fn refill(&self, locked: &mut PriorityBasedIoRateLimiterProtected, now: Instant) {
+        println!("Refill =======");
         let mut total_budgets =
             self.bytes_per_epoch[IoPriority::High as usize].load(Ordering::Relaxed);
         if total_budgets == 0 {
@@ -363,12 +377,13 @@ impl PriorityBasedIoRateLimiter {
         let skipped_epochs =
             (now - locked.next_refill_time).as_secs_f32() / DEFAULT_REFILL_PERIOD.as_secs_f32();
         locked.next_refill_time = now + DEFAULT_REFILL_PERIOD;
-
+        println!("Skipped epochs {}", skipped_epochs);
         debug_assert!(
             IoPriority::High as usize == IoPriority::Medium as usize + 1
                 && IoPriority::Medium as usize == IoPriority::Low as usize + 1
         );
         let mut remaining_budgets = total_budgets;
+        println!("Total budgets {}", total_budgets);
         let mut used_budgets = 0;
         for pri in &[IoPriority::High, IoPriority::Medium] {
             let p = *pri as usize;
@@ -382,6 +397,10 @@ impl PriorityBasedIoRateLimiter {
             // Reserve some of new epoch's budgets to serve pending bytes.
             let to_serve_pending_bytes = std::cmp::min(locked.pending_bytes[p], remaining_budgets);
             locked.pending_bytes[p] -= to_serve_pending_bytes;
+            println!(
+                "Pri {:?}, pending bytes now {}",
+                pri, locked.pending_bytes[p]
+            );
             // Update throughput estimation over recent epochs.
             let served_by_first_epoch = std::cmp::min(
                 self.bytes_through[p].swap(to_serve_pending_bytes, Ordering::Relaxed),
@@ -389,6 +408,10 @@ impl PriorityBasedIoRateLimiter {
             );
             used_budgets += ((served_by_first_epoch + served_by_skipped_epochs) as f32
                 / (skipped_epochs + 1.0)) as usize;
+            println!(
+                "Pri {:?}, used_budgets {} -- served_by_first_epoch {}  served_by_skipped_epochs {}",
+                pri, used_budgets, served_by_first_epoch, served_by_skipped_epochs
+            );
             // Only apply rate limit adjustments on low-priority IOs.
             if *pri == IoPriority::Medium {
                 if let Some(adjustor) = &locked.adjustor {
@@ -410,10 +433,20 @@ impl PriorityBasedIoRateLimiter {
                     .set((remaining_budgets * DEFAULT_REFILLS_PER_SEC) as i64);
             }
             self.bytes_per_epoch[p - 1].store(remaining_budgets, Ordering::Relaxed);
+            println!(
+                "Set bytes_per_epoch for pri {:?}, val {}",
+                IoPriority::unsafe_from_u32(p as u32 - 1),
+                remaining_budgets
+            );
         }
         let p = IoPriority::Low as usize;
         let to_serve_pending_bytes = std::cmp::min(locked.pending_bytes[p], remaining_budgets);
         locked.pending_bytes[p] -= to_serve_pending_bytes;
+        println!(
+            "Pri {:?}, pending bytes now {}",
+            IoPriority::Low,
+            locked.pending_bytes[p]
+        );
         self.bytes_through[p].store(to_serve_pending_bytes, Ordering::Relaxed);
     }
 
