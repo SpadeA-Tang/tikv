@@ -969,6 +969,14 @@ where
 
     /// Handles all the committed_entries, namely, applies the committed
     /// entries.
+    /// 
+    /// handle_raft_committed_entries
+    ///     handle_raft_entry_normal (for each one)
+    ///         process_raft_cmd
+    ///             apply_raft_cmd
+    ///                 exec_raft_cmd
+    ///                     exec_admin_cmd
+    ///                     exec_write_cmd
     fn handle_raft_committed_entries(
         &mut self,
         apply_ctx: &mut ApplyContext<EK>,
@@ -1078,12 +1086,21 @@ where
 
         if !data.is_empty() {
             let cmd = util::parse_data_at(data, index, &self.tag);
+            println!("Handle raft entry {:?} index {} term {}", cmd, index, term);
 
             if apply_ctx.yield_high_latency_operation && has_high_latency_operation(&cmd) {
                 self.priority = Priority::Low;
             }
             let mut has_unflushed_data =
                 self.last_flush_applied_index != self.apply_state.get_applied_index();
+
+            println!(
+                "has_unflushed_data {}, last_flush_applied_index {}, applyied_index {}",
+                has_unflushed_data,
+                self.last_flush_applied_index,
+                self.apply_state.get_applied_index()
+            );
+
             if has_unflushed_data && should_write_to_engine(&cmd)
                 || apply_ctx.kv_wb().should_write_to_engine()
             {
@@ -1295,6 +1312,7 @@ where
                     a
                 }
                 Err(e) => {
+                    println!("Exec failed {:?}", e);
                     // clear dirty values.
                     ctx.kv_wb_mut().rollback_to_save_point().unwrap();
                     match e {
@@ -2315,6 +2333,15 @@ where
             "region" => ?derived,
             "keys" => %KeysInfoFormatter(keys.iter()),
         );
+
+        println!(
+            "=== Split region region_id {} peer_id {} region {:?} keys {}",
+            self.region_id(),
+            self.id(),
+            derived,
+            KeysInfoFormatter(keys.iter())
+        );
+
         let new_version = derived.get_region_epoch().get_version() + new_region_cnt as u64;
         derived.mut_region_epoch().set_version(new_version);
         // Note that the split requests only contain ids for new regions, so we need
