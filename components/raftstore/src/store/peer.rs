@@ -2914,6 +2914,9 @@ where
         persist_res
     }
 
+    // unpersisted_ready 中保存着还未发送的 msgs，既然 ready with number 已经持久化了，
+    // 便可以将 number 及其以前的 ready 中的 msgs 发送出去。
+    // 并调用 on_persist_ready 更新 raft 内部的状态（比如 commit）
     pub fn on_persist_ready<T: Transport>(
         &mut self,
         ctx: &mut PollContext<EK, ER, T>,
