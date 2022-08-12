@@ -56,11 +56,15 @@ unsafe impl<Res: Send> Send for EventCore<Res> {}
 const PAYLOAD_EVENT: u64 = 0;
 const CANCEL_EVENT: u64 = 31;
 
+// PROPOSED_EVENT  2 :  call once -> 0b10000
+// COMMITTED_EVENT 3 :  call once -> 0b1000000
 #[inline]
 const fn subscribed_bit_of(event: u64) -> u64 {
     1 << (event * 2)
 }
 
+// PROPOSED_EVENT  2 :  call once -> 0b100000
+// COMMITTED_EVENT 3 :  call once -> 0b10000000
 #[inline]
 const fn set_bit_of(event: u64) -> u64 {
     1 << (event * 2 + 1)
@@ -69,7 +73,21 @@ const fn set_bit_of(event: u64) -> u64 {
 impl<Res> EventCore<Res> {
     #[inline]
     pub fn notify_event(&self, event: u64) {
+        println!("=== notify event {:#b}", event);
         let previous = self.event.fetch_or(set_bit_of(event), Ordering::AcqRel);
+        let current = self.event.load(Ordering::Relaxed);
+        println!(
+            "previous {:#b} set_bit_of {:#b} current {:#b}",
+            previous,
+            set_bit_of(event),
+            current
+        );
+        println!(
+            "previous {:#b}  &  subscribed_bit_of {:#b} = {:#b}",
+            previous,
+            subscribed_bit_of(event),
+            previous & subscribed_bit_of(event)
+        );
         if previous & subscribed_bit_of(event) != 0 {
             self.waker.wake()
         }
@@ -80,6 +98,7 @@ impl<Res> EventCore<Res> {
     /// After this call, no events should be notified.
     #[inline]
     pub fn set_result(&self, result: Res) {
+        println!("---- set result");
         unsafe {
             *self.res.get() = Some(result);
         }
@@ -87,6 +106,20 @@ impl<Res> EventCore<Res> {
             set_bit_of(PAYLOAD_EVENT) | set_bit_of(CANCEL_EVENT),
             Ordering::AcqRel,
         );
+        let current = self.event.load(Ordering::Relaxed);
+        println!(
+            "previous {:#b} set_bit_of Payload {:#b} set_bit_of Cancel {:#b}",
+            previous,
+            set_bit_of(PAYLOAD_EVENT),
+            set_bit_of(CANCEL_EVENT)
+        );
+        println!(
+            "previous {:#b}  &  subscribed_bit_of PAYLOAD_EVENT {:#b} = {:#b}",
+            previous,
+            subscribed_bit_of(PAYLOAD_EVENT),
+            previous & subscribed_bit_of(PAYLOAD_EVENT)
+        );
+
         if previous & subscribed_bit_of(PAYLOAD_EVENT) != 0 {
             self.waker.wake()
         }
@@ -98,11 +131,13 @@ impl<Res> EventCore<Res> {
     /// set.
     #[inline]
     pub fn cancel(&self) {
+        println!("Core cancel");
         let mut previous = self
             .event
             .fetch_or(set_bit_of(CANCEL_EVENT), Ordering::AcqRel);
         let subscribed_bit = subscribed_bit_of(0);
         while previous != 0 {
+            println!("previous {:#b} subscribed_bit {:#b}", previous, subscribed_bit);
             // Not notified yet.
             if previous & 0b11 == subscribed_bit {
                 self.waker.wake();
@@ -120,13 +155,17 @@ struct WaitEvent<'a, Res> {
 
 #[inline]
 fn check_bit(e: u64, set_bit: u64) -> Option<bool> {
+    println!("Check bit e {:#b} set_bit {:#b}", e, set_bit);
     if e & set_bit != 0 {
+        println!("check res true");
         return Some(true);
     }
     let cancel_bit = set_bit_of(CANCEL_EVENT);
     if e & cancel_bit != 0 {
+        println!("check res false");
         return Some(false);
     }
+    println!("check res none");
     None
 }
 
@@ -135,6 +174,11 @@ impl<'a, Res> Future for WaitEvent<'a, Res> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.event == 2 {
+            println!("WaitEvent propose");
+        } else if self.event == 3 {
+            println!("Waitevent commit");
+        }
         let event = &self.core.event;
         let mut e = event.load(Ordering::Relaxed);
         let set_bit = set_bit_of(self.event);
@@ -169,6 +213,7 @@ impl<'a, Res> Future for WaitResult<'a, Res> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("Wait result");
         let event = &self.core.event;
         let set_bit = set_bit_of(PAYLOAD_EVENT);
         let mut e = event.load(Ordering::Relaxed);
