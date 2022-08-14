@@ -2458,7 +2458,6 @@ where
         }
 
         if !self.raft_group.has_ready() {
-            fail_point!("before_no_ready_gen_snap_task", |_| None);
             // Generating snapshot task won't set ready for raft group.
             if let Some(gen_task) = self.mut_store().take_gen_snap_task() {
                 self.pending_request_snapshot_count
@@ -2468,28 +2467,6 @@ where
             }
             return None;
         }
-
-        fail_point!(
-            "before_handle_raft_ready_1003",
-            self.peer.get_id() == 1003 && self.is_leader(),
-            |_| None
-        );
-
-        fail_point!(
-            "before_handle_snapshot_ready_3",
-            self.peer.get_id() == 3 && self.get_pending_snapshot().is_some(),
-            |_| None
-        );
-
-        fail_point!("panic_if_handle_ready_3", self.peer.get_id() == 3, |_| {
-            panic!("{} wants to handle ready", self.tag);
-        });
-
-        debug!(
-            "handle raft ready";
-            "region_id" => self.region_id,
-            "peer_id" => self.peer.get_id(),
-        );
 
         let mut ready = self.raft_group.ready();
 
