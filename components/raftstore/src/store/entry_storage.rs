@@ -1,7 +1,7 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
 //! This module contains the implementation of the `EntryStorage`, which covers
-//! a subset of raft storage. This module will be shared between raftstore v1
+//! a subset of raft storage. This &module will be shared between raftstore v1
 //! and v2.
 
 use std::{
@@ -659,6 +659,16 @@ impl<ER: RaftEngine> EntryStorage<ER> {
         context: GetEntriesContext,
         buf: &mut Vec<Entry>,
     ) -> raft::Result<usize> {
+        println!(
+            "Async fetch: region_id {} low {} high {}",
+            region_id, low, high
+        );
+        println!(
+            "Current fetch state for low {}: {:?}",
+            low,
+            self.async_fetch_results.borrow().get(&low)
+        );
+
         if let Some(RaftlogFetchState::Fetching(_)) = self.async_fetch_results.borrow().get(&low) {
             // already an async fetch in flight
             return Err(raft::Error::Store(
@@ -669,6 +679,7 @@ impl<ER: RaftEngine> EntryStorage<ER> {
         let tried_cnt = if let Some(RaftlogFetchState::Fetched(res)) =
             self.async_fetch_results.borrow_mut().remove(&low)
         {
+            println!("fetched result {:?}", res);
             assert_eq!(res.low, low);
             let mut ents = res.ents?;
             let first = ents.first().map(|e| e.index).unwrap();
