@@ -1623,16 +1623,6 @@ where
             let to_peer_id = msg.get_to_peer().get_id();
             let to_store_id = msg.get_to_peer().get_store_id();
 
-            debug!(
-                "send raft msg";
-                "region_id" => self.region_id,
-                "peer_id" => self.peer.get_id(),
-                "msg_type" => ?msg_type,
-                "msg_size" => msg.get_message().compute_size(),
-                "to" => to_peer_id,
-                "disk_usage" => ?msg.get_disk_usage(),
-            );
-
             for (term, index) in msg
                 .get_message()
                 .get_entries()
@@ -1657,15 +1647,6 @@ where
 
             if let Err(e) = ctx.trans.send(msg) {
                 // We use metrics to observe failure on production.
-                debug!(
-                    "failed to send msg to other peer";
-                    "region_id" => self.region_id,
-                    "peer_id" => self.peer.get_id(),
-                    "target_peer_id" => to_peer_id,
-                    "target_store_id" => to_store_id,
-                    "err" => ?e,
-                    "error_code" => %e.error_code(),
-                );
                 if to_peer_id == self.leader_id() {
                     self.leader_unreachable = true;
                 }
@@ -2891,8 +2872,8 @@ where
         persist_res
     }
 
-    // unpersisted_ready 中保存着还未发送的 msgs，既然 ready with number 已经持久化了，
-    // 便可以将 number 及其以前的 ready 中的 msgs 发送出去。
+    // unpersisted_ready 中保存着还未发送的 msgs，既然 ready with number
+    // 已经持久化了， 便可以将 number 及其以前的 ready 中的 msgs 发送出去。
     // 并调用 on_persist_ready 更新 raft 内部的状态（比如 commit）
     pub fn on_persist_ready<T: Transport>(
         &mut self,
