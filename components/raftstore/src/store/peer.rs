@@ -2397,11 +2397,6 @@ where
                 let count = self.pending_request_snapshot_count.load(Ordering::SeqCst);
                 debug!(
                     "not ready to apply snapshot";
-                    "region_id" => self.region_id,
-                    "peer_id" => self.peer.get_id(),
-                    "applied_index" => self.get_store().applied_index(),
-                    "last_applying_index" => self.last_applying_idx,
-                    "pending_request_snapshot_count" => count,
                 );
                 return None;
             }
@@ -2409,9 +2404,6 @@ where
             if !self.unpersisted_readies.is_empty() {
                 debug!(
                     "not ready to apply snapshot because there are some unpersisted readies";
-                    "region_id" => self.region_id,
-                    "peer_id" => self.peer.get_id(),
-                    "unpersisted_readies" => ?self.unpersisted_readies,
                 );
                 return None;
             }
@@ -2425,11 +2417,6 @@ where
                     if !is_ready {
                         info!(
                             "snapshot range overlaps, wait source destroy finish";
-                            "region_id" => self.region_id,
-                            "peer_id" => self.peer.get_id(),
-                            "apply_index" => self.get_store().applied_index(),
-                            "last_applying_index" => self.last_applying_idx,
-                            "overlap_region_id" => source_region_id,
                         );
                         return None;
                     }
