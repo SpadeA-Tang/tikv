@@ -36,8 +36,8 @@ use crate::{
         cmd_resp,
         fsm::store::StoreMeta,
         util::{self, LeaseState, RegionReadProgress, RemoteLease},
-        Callback, CasualMessage, CasualRouter, Peer, ProposalRouter, RaftCommand, ReadResponse,
-        RegionSnapshot, RequestInspector, RequestPolicy, TxnExt,
+        Callback, CasualMessage, CasualRouter, Peer, ProposalRouter, RaftCommand, ReadCallback,
+        ReadResponse, RegionSnapshot, RequestInspector, RequestPolicy, TxnExt,
     },
     Error, Result,
 };
@@ -853,6 +853,82 @@ where
 
     pub fn release_snapshot_cache(&mut self) {
         self.snap_cache.as_mut().take();
+    }
+}
+
+trait LocalReaderTrait {
+    type E: KvEngine;
+    type D: ReadExecutor<Self::E> + Deref<Target = ReadDelegate> + Clone;
+    type Callback: ReadCallback;
+    type Router: ProposalRouter<<Self::E as KvEngine>::Snapshot> + CasualRouter<Self::E>;
+
+    fn local_read_context(&mut self) -> LocalReadContext<'_, Self::E>;
+
+    fn router(&self) -> &Self::Router;
+
+    fn read_local(
+        &mut self,
+        mut read_id: Option<ThreadReadId>,
+        req: &RaftCmdRequest,
+        delegate: Self::D,
+    ) -> <Self::Callback as ReadCallback>::Response {
+        let snapshot_ts = match read_id.as_mut() {
+            // If this peer became Leader not long ago and just after the cached
+            // snapshot was created, this snapshot can not see all data of the peer.
+            Some(id) => {
+                if id.create_time <= delegate.last_valid_ts {
+                    id.create_time = monotonic_raw_now();
+                }
+                id.create_time
+            }
+            None => monotonic_raw_now(),
+        };
+        if !delegate.is_in_leader_lease(snapshot_ts) {
+            // Forward to raftstore.
+            // self.redirect(RaftCommand::new(req, cb));
+            // return false;
+        }
+
+        let delegate_ext = self.local_read_context();
+
+        let region = Arc::clone(&delegate.region);
+        let response = delegate.execute(req, &region, None, read_id, Some(delegate_ext));
+        // Try renew lease in advance
+        delegate.maybe_renew_lease_advance(self.router(), snapshot_ts);
+        response
+    }
+
+    fn stale_read(
+        &mut self,
+        mut read_id: Option<ThreadReadId>,
+        req: &RaftCmdRequest,
+        cb: Self::Callback,
+        delegate: Self::D,
+    ) -> <Self::Callback as ReadCallback>::Response {
+        let read_ts = decode_u64(&mut req.get_header().get_flag_data()).unwrap();
+        assert!(read_ts > 0);
+        if let Err(resp) = delegate.check_stale_read_safe(read_ts) {
+            cb.set_result(resp);
+            // return true;
+        }
+
+        let delegate_ext = LocalReadContext {
+            snap_cache: &mut self.snap_cache,
+            read_id: &mut self.cache_read_id,
+        };
+
+        let region = Arc::clone(&delegate.region);
+        // Getting the snapshot
+        let response = delegate.execute(req, &region, None, read_id, Some(delegate_ext));
+
+        // Double check in case `safe_ts` change after the first check and before
+        // getting snapshot
+        if let Err(resp) = delegate.check_stale_read_safe(read_ts) {
+            cb.set_result(resp);
+            // return true;
+        }
+        TLS_LOCAL_READ_METRICS.with(|m| m.borrow_mut().local_executed_stale_read_requests.inc());
+        response
     }
 }
 
