@@ -44,6 +44,8 @@ use crate::{
 
 /// #[RaftstoreCommon]
 pub trait ReadExecutor<E: KvEngine> {
+    type Response;
+
     fn get_tablet(&mut self) -> &E;
     fn get_snapshot(
         &mut self,
@@ -95,60 +97,71 @@ pub trait ReadExecutor<E: KvEngine> {
         read_index: Option<u64>,
         mut ts: Option<ThreadReadId>,
         mut read_context: Option<LocalReadContext<'_, E>>,
-    ) -> ReadResponse<E::Snapshot> {
-        let requests = msg.get_requests();
-        let mut response = ReadResponse {
-            response: RaftCmdResponse::default(),
-            snapshot: None,
-            txn_extra_op: TxnExtraOp::Noop,
-        };
-        let mut responses = Vec::with_capacity(requests.len());
-        for req in requests {
-            let cmd_type = req.get_cmd_type();
-            let mut resp = match cmd_type {
-                CmdType::Get => match self.get_value(req, region.as_ref()) {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        error!(?e;
-                            "failed to execute get command";
-                            "region_id" => region.get_id(),
-                        );
-                        response.response = cmd_resp::new_error(e);
-                        return response;
-                    }
-                },
-                CmdType::Snap => {
-                    let snapshot = RegionSnapshot::from_snapshot(
-                        self.get_snapshot(ts.take(), &mut read_context),
-                        region.clone(),
-                    );
-                    response.snapshot = Some(snapshot);
-                    Response::default()
-                }
-                CmdType::ReadIndex => {
-                    let mut resp = Response::default();
-                    if let Some(read_index) = read_index {
-                        let mut res = ReadIndexResponse::default();
-                        res.set_read_index(read_index);
-                        resp.set_read_index(res);
-                    } else {
-                        panic!("[region {}] can not get readindex", region.get_id());
-                    }
-                    resp
-                }
-                CmdType::Prewrite
-                | CmdType::Put
-                | CmdType::Delete
-                | CmdType::DeleteRange
-                | CmdType::IngestSst
-                | CmdType::Invalid => unreachable!(),
-            };
-            resp.set_cmd_type(cmd_type);
-            responses.push(resp);
-        }
-        response.response.set_responses(responses.into());
-        response
+    ) -> Self::Response {
+        unimplemented!()
     }
+
+    // fn execute(
+    //     &mut self,
+    //     msg: &RaftCmdRequest,
+    //     region: &Arc<metapb::Region>,
+    //     read_index: Option<u64>,
+    //     mut ts: Option<ThreadReadId>,
+    //     mut read_context: Option<LocalReadContext<'_, E>>,
+    // ) -> ReadResponse<E::Snapshot> {
+    //     let requests = msg.get_requests();
+    //     let mut response = ReadResponse {
+    //         response: RaftCmdResponse::default(),
+    //         snapshot: None,
+    //         txn_extra_op: TxnExtraOp::Noop,
+    //     };
+    //     let mut responses = Vec::with_capacity(requests.len());
+    //     for req in requests {
+    //         let cmd_type = req.get_cmd_type();
+    //         let mut resp = match cmd_type {
+    //             CmdType::Get => match self.get_value(req, region.as_ref()) {
+    //                 Ok(resp) => resp,
+    //                 Err(e) => {
+    //                     error!(?e;
+    //                         "failed to execute get command";
+    //                         "region_id" => region.get_id(),
+    //                     );
+    //                     response.response = cmd_resp::new_error(e);
+    //                     return response;
+    //                 }
+    //             },
+    //             CmdType::Snap => {
+    //                 let snapshot = RegionSnapshot::from_snapshot(
+    //                     self.get_snapshot(ts.take(), &mut read_context),
+    //                     region.clone(),
+    //                 );
+    //                 response.snapshot = Some(snapshot);
+    //                 Response::default()
+    //             }
+    //             CmdType::ReadIndex => {
+    //                 let mut resp = Response::default();
+    //                 if let Some(read_index) = read_index {
+    //                     let mut res = ReadIndexResponse::default();
+    //                     res.set_read_index(read_index);
+    //                     resp.set_read_index(res);
+    //                 } else {
+    //                     panic!("[region {}] can not get readindex",
+    // region.get_id());                 }
+    //                 resp
+    //             }
+    //             CmdType::Prewrite
+    //             | CmdType::Put
+    //             | CmdType::Delete
+    //             | CmdType::DeleteRange
+    //             | CmdType::IngestSst
+    //             | CmdType::Invalid => unreachable!(),
+    //         };
+    //         resp.set_cmd_type(cmd_type);
+    //         responses.push(resp);
+    //     }
+    //     response.response.set_responses(responses.into());
+    //     response
+    // }
 }
 
 /// #[RaftstoreCommon]: A read only delegate of `Peer`.
@@ -559,6 +572,8 @@ impl<E> ReadExecutor<E> for CachedReadDelegate<E>
 where
     E: KvEngine,
 {
+    type Response = ReadResponse<E::Snapshot>;
+
     fn get_tablet(&mut self) -> &E {
         &self.kv_engine
     }
@@ -591,7 +606,7 @@ impl<C, E, D, S> LocalReader<C, E, D, S>
 where
     C: ProposalRouter<E::Snapshot> + CasualRouter<E>,
     E: KvEngine,
-    D: ReadExecutor<E> + Deref<Target = ReadDelegate> + Clone,
+    D: ReadExecutor<E, Response = ReadResponse<E::Snapshot>> + Deref<Target = ReadDelegate> + Clone,
     S: ReadExecutorProvider<E, Executor = D>,
 {
     pub fn new(kv_engine: E, store_meta: S, router: C) -> Self {
@@ -859,7 +874,7 @@ where
 trait LocalReaderTrait {
     type E: KvEngine;
     type D: ReadExecutor<Self::E> + Deref<Target = ReadDelegate> + Clone;
-    type Callback: ReadCallback;
+    type Callback: ReadCallback<Response = <Self::D as ReadExecutor<Self::E>>::Response>;
     type Router: ProposalRouter<<Self::E as KvEngine>::Snapshot> + CasualRouter<Self::E>;
 
     fn local_read_context(&mut self) -> LocalReadContext<'_, Self::E>;
@@ -871,7 +886,7 @@ trait LocalReaderTrait {
         mut read_id: Option<ThreadReadId>,
         req: &RaftCmdRequest,
         delegate: Self::D,
-    ) -> <Self::Callback as ReadCallback>::Response {
+    ) -> <Self::D as ReadExecutor<Self::E>>::Response {
         let snapshot_ts = match read_id.as_mut() {
             // If this peer became Leader not long ago and just after the cached
             // snapshot was created, this snapshot can not see all data of the peer.
@@ -904,7 +919,7 @@ trait LocalReaderTrait {
         req: &RaftCmdRequest,
         cb: Self::Callback,
         delegate: Self::D,
-    ) -> <Self::Callback as ReadCallback>::Response {
+    ) -> <Self::D as ReadExecutor<Self::E>>::Response {
         let read_ts = decode_u64(&mut req.get_header().get_flag_data()).unwrap();
         assert!(read_ts > 0);
         if let Err(resp) = delegate.check_stale_read_safe(read_ts) {

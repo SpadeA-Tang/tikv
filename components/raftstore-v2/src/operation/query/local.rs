@@ -85,6 +85,8 @@ impl<E> ReadExecutor<E> for CachedReadDelegate<E>
 where
     E: KvEngine,
 {
+    type Response;
+    
     fn get_tablet(&mut self) -> &E {
         self.cached_tablet.latest().unwrap()
     }
@@ -96,6 +98,17 @@ where
     ) -> Arc<E::Snapshot> {
         Arc::new(self.cached_tablet.latest().unwrap().snapshot())
     }
+
+    // fn execute(
+    //         &mut self,
+    //         msg: &RaftCmdRequest,
+    //         region: &Arc<metapb::Region>,
+    //         read_index: Option<u64>,
+    //         mut ts: Option<ThreadReadId>,
+    //         mut read_context: Option<raftstore::store::LocalReadContext<'_, E>>,
+    //     ) -> Self::Response {
+        
+    // }
 }
 
 #[derive(Clone)]

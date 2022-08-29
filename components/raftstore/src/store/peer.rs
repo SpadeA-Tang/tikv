@@ -5476,6 +5476,8 @@ where
     EK: KvEngine,
     ER: RaftEngine,
 {
+    type Response = ReadResponse<<EK as KvEngine>::Snapshot>;
+
     fn get_tablet(&mut self) -> &EK {
         &self.engines.kv
     }
@@ -5487,6 +5489,69 @@ where
     ) -> Arc<EK::Snapshot> {
         Arc::new(self.engines.kv.snapshot())
     }
+
+    // fn execute(
+    //     &mut self,
+    //     msg: &RaftCmdRequest,
+    //     region: &Arc<metapb::Region>,
+    //     read_index: Option<u64>,
+    //     mut ts: Option<ThreadReadId>,
+    //     mut read_context: Option<LocalReadContext<'_, EK>>,
+    // ) -> Self::Response {
+    //     let requests = msg.get_requests();
+    //     let mut response = ReadResponse {
+    //         response: RaftCmdResponse::default(),
+    //         snapshot: None,
+    //         txn_extra_op: TxnExtraOp::Noop,
+    //     };
+    //     let mut responses = Vec::with_capacity(requests.len());
+    //     for req in requests {
+    //         let cmd_type = req.get_cmd_type();
+    //         let mut resp = match cmd_type {
+    //             CmdType::Get => match self.get_value(req, region.as_ref()) {
+    //                 Ok(resp) => resp,
+    //                 Err(e) => {
+    //                     error!(?e;
+    //                         "failed to execute get command";
+    //                         "region_id" => region.get_id(),
+    //                     );
+    //                     response.response = cmd_resp::new_error(e);
+    //                     return response;
+    //                 }
+    //             },
+    //             CmdType::Snap => {
+    //                 let snapshot = RegionSnapshot::from_snapshot(
+    //                     self.get_snapshot(ts.take(), &mut read_context),
+    //                     region.clone(),
+    //                 );
+    //                 response.snapshot = Some(snapshot);
+    //                 Response::default()
+    //             }
+    //             CmdType::ReadIndex => {
+    //                 let mut resp = Response::default();
+    //                 if let Some(read_index) = read_index {
+    //                     let mut res = ReadIndexResponse::default();
+    //                     res.set_read_index(read_index);
+    //                     resp.set_read_index(res);
+    //                 } else {
+    //                     panic!("[region {}] can not get readindex", region.get_id());
+    //                 }
+    //                 resp
+    //             }
+    //             CmdType::Prewrite
+    //             | CmdType::Put
+    //             | CmdType::Delete
+    //             | CmdType::DeleteRange
+    //             | CmdType::IngestSst
+    //             | CmdType::Invalid => unreachable!(),
+    //         };
+    //         resp.set_cmd_type(cmd_type);
+    //         responses.push(resp);
+    //     }
+    //     response.response.set_responses(responses.into());
+    //     response
+    // }
+
 }
 
 fn get_transfer_leader_cmd(msg: &RaftCmdRequest) -> Option<&TransferLeaderRequest> {
