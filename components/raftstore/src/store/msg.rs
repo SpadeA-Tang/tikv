@@ -275,8 +275,8 @@ where
     }
 }
 
-pub trait ReadCallback: ErrorCallback {
-    type Response;
+pub trait ReadCallback<S: Snapshot>: ErrorCallback {
+    type Response: ReadResponseTrait<S>;
 
     fn set_result(self, result: Self::Response);
 }
@@ -296,7 +296,7 @@ pub trait ErrorCallback: Send {
     fn is_none(&self) -> bool;
 }
 
-impl<S: Snapshot> ReadCallback for Callback<S> {
+impl<S: Snapshot> ReadCallback<S> for Callback<S> {
     type Response = ReadResponse<S>;
 
     #[inline]
