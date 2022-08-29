@@ -37,6 +37,26 @@ use crate::store::{
     SnapKey,
 };
 
+pub trait ReadResponseTrait: Default {
+    type Response;
+
+    fn set_response(&mut self, response: Self::Response);
+
+    fn set_error(&mut self, error: RaftCmdResponse);
+}
+
+impl<S: Snapshot> ReadResponseTrait for ReadResponse<S> {
+    type Response = RaftCmdResponse;
+
+    fn set_response(&mut self, response: Self::Response) {
+        self.response = response;
+    }
+
+    fn set_error(&mut self, error: RaftCmdResponse) {
+        self.response = error;
+    }
+}
+
 #[derive(Debug)]
 pub struct ReadResponse<S: Snapshot> {
     pub response: RaftCmdResponse,
@@ -69,6 +89,19 @@ where
             response: self.response.clone(),
             snapshot: self.snapshot.clone(),
             txn_extra_op: self.txn_extra_op,
+        }
+    }
+}
+
+impl<S> Default for ReadResponse<S>
+where
+    S: Snapshot,
+{
+    fn default() -> Self {
+        ReadResponse {
+            response: RaftCmdResponse::default(),
+            snapshot: None,
+            txn_extra_op: TxnExtraOp::Noop,
         }
     }
 }

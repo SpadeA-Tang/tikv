@@ -35,6 +35,7 @@ use crate::{
     store::{
         cmd_resp,
         fsm::store::StoreMeta,
+        msg::ReadResponseTrait,
         util::{self, LeaseState, RegionReadProgress, RemoteLease},
         Callback, CasualMessage, CasualRouter, Peer, ProposalRouter, RaftCommand, ReadResponse,
         RegionSnapshot, RequestInspector, RequestPolicy, TxnExt,
@@ -435,10 +436,10 @@ impl ReadDelegate {
         false
     }
 
-    pub fn check_stale_read_safe<S: Snapshot>(
+    pub fn check_stale_read_safe<R: ReadResponseTrait>(
         &self,
         read_ts: u64,
-    ) -> std::result::Result<(), ReadResponse<S>> {
+    ) -> std::result::Result<(), R> {
         let safe_ts = self.read_progress.safe_ts();
         if safe_ts >= read_ts {
             return Ok(());
@@ -456,11 +457,9 @@ impl ReadDelegate {
             safe_ts,
         });
         cmd_resp::bind_term(&mut response, self.term);
-        Err(ReadResponse {
-            response,
-            snapshot: None,
-            txn_extra_op: TxnExtraOp::Noop,
-        })
+        let mut read_response = R::default();
+        read_response.set_error(response);
+        Err(read_response)
     }
 
     /// Used in some external tests.
