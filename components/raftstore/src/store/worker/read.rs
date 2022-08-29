@@ -37,15 +37,18 @@ use crate::{
         fsm::store::StoreMeta,
         msg::ReadResponseTrait,
         util::{self, LeaseState, RegionReadProgress, RemoteLease},
-        Callback, CasualMessage, CasualRouter, Peer, ProposalRouter, RaftCommand, ReadResponse,
-        RegionSnapshot, RequestInspector, RequestPolicy, TxnExt,
+        Callback, CasualMessage, CasualRouter, Peer, ProposalRouter, RaftCommand, ReadCallback,
+        ReadResponse, RegionSnapshot, RequestInspector, RequestPolicy, TxnExt,
     },
     Error, Result,
 };
 
 /// #[RaftstoreCommon]
 pub trait ReadExecutor<E: KvEngine> {
+    type Response: ReadResponseTrait<E::Snapshot>;
+
     fn get_tablet(&mut self) -> &E;
+
     fn get_snapshot(
         &mut self,
         ts: Option<ThreadReadId>,
@@ -96,13 +99,9 @@ pub trait ReadExecutor<E: KvEngine> {
         read_index: Option<u64>,
         mut ts: Option<ThreadReadId>,
         mut read_context: Option<LocalReadContext<'_, E>>,
-    ) -> ReadResponse<E::Snapshot> {
+    ) -> Self::Response {
         let requests = msg.get_requests();
-        let mut response = ReadResponse {
-            response: RaftCmdResponse::default(),
-            snapshot: None,
-            txn_extra_op: TxnExtraOp::Noop,
-        };
+        let mut response = Self::Response::default();
         let mut responses = Vec::with_capacity(requests.len());
         for req in requests {
             let cmd_type = req.get_cmd_type();
@@ -114,7 +113,7 @@ pub trait ReadExecutor<E: KvEngine> {
                             "failed to execute get command";
                             "region_id" => region.get_id(),
                         );
-                        response.response = cmd_resp::new_error(e);
+                        response.set_error(cmd_resp::new_error(e));
                         return response;
                     }
                 },
@@ -123,7 +122,7 @@ pub trait ReadExecutor<E: KvEngine> {
                         self.get_snapshot(ts.take(), &mut read_context),
                         region.clone(),
                     );
-                    response.snapshot = Some(snapshot);
+                    response.set_snapshot(snapshot);
                     Response::default()
                 }
                 CmdType::ReadIndex => {
@@ -147,7 +146,7 @@ pub trait ReadExecutor<E: KvEngine> {
             resp.set_cmd_type(cmd_type);
             responses.push(resp);
         }
-        response.response.set_responses(responses.into());
+        response.set_responses(responses.into());
         response
     }
 }
@@ -436,7 +435,7 @@ impl ReadDelegate {
         false
     }
 
-    pub fn check_stale_read_safe<R: ReadResponseTrait>(
+    pub fn check_stale_read_safe<EK: KvEngine, R: ReadResponseTrait<EK::Snapshot>>(
         &self,
         read_ts: u64,
     ) -> std::result::Result<(), R> {
@@ -532,6 +531,83 @@ impl Progress {
     }
 }
 
+trait LocalReaderTrait {
+    type E: KvEngine;
+    type D: ReadExecutor<Self::E> + Deref<Target = ReadDelegate> + Clone;
+    type Callback: ReadCallback;
+    type Router: ProposalRouter<<Self::E as KvEngine>::Snapshot> + CasualRouter<Self::E>;
+
+    fn local_read_context(&mut self) -> LocalReadContext<'_, Self::E>;
+
+    fn router(&self) -> &Self::Router;
+
+    // fn read_local(
+    //     &mut self,
+    //     mut read_id: Option<ThreadReadId>,
+    //     req: &RaftCmdRequest,
+    //     delegate: Self::D,
+    // ) -> <Self::Callback as ReadCallback>::Response {
+    //     let snapshot_ts = match read_id.as_mut() {
+    //         // If this peer became Leader not long ago and just after the cached
+    //         // snapshot was created, this snapshot can not see all data of the
+    // peer.         Some(id) => {
+    //             if id.create_time <= delegate.last_valid_ts {
+    //                 id.create_time = monotonic_raw_now();
+    //             }
+    //             id.create_time
+    //         }
+    //         None => monotonic_raw_now(),
+    //     };
+    //     if !delegate.is_in_leader_lease(snapshot_ts) {
+    //         // Forward to raftstore.
+    //         // self.redirect(RaftCommand::new(req, cb));
+    //         // return false;
+    //     }
+
+    //     let delegate_ext = self.local_read_context();
+
+    //     let region = Arc::clone(&delegate.region);
+    //     let response = delegate.execute(req, &region, None, read_id,
+    // Some(delegate_ext));     // Try renew lease in advance
+    //     delegate.maybe_renew_lease_advance(self.router(), snapshot_ts);
+    //     response
+    // }
+
+    // fn stale_read(
+    //     &mut self,
+    //     mut read_id: Option<ThreadReadId>,
+    //     req: &RaftCmdRequest,
+    //     cb: Self::Callback,
+    //     delegate: Self::D,
+    // ) -> <Self::Callback as ReadCallback>::Response {
+    //     let read_ts = decode_u64(&mut req.get_header().get_flag_data()).unwrap();
+    //     assert!(read_ts > 0);
+    //     if let Err(resp) = delegate.check_stale_read_safe(read_ts) {
+    //         cb.set_result(resp);
+    //         // return true;
+    //     }
+
+    //     let delegate_ext = LocalReadContext {
+    //         snap_cache: &mut self.snap_cache,
+    //         read_id: &mut self.cache_read_id,
+    //     };
+
+    //     let region = Arc::clone(&delegate.region);
+    //     // Getting the snapshot
+    //     let response = delegate.execute(req, &region, None, read_id,
+    // Some(delegate_ext));
+
+    //     // Double check in case `safe_ts` change after the first check and before
+    //     // getting snapshot
+    //     if let Err(resp) = delegate.check_stale_read_safe(read_ts) {
+    //         cb.set_result(resp);
+    //         // return true;
+    //     }
+    //     TLS_LOCAL_READ_METRICS.with(|m|
+    // m.borrow_mut().local_executed_stale_read_requests.inc());     response
+    // }
+}
+
 /// #[RaftstoreCommon]: LocalReader is an entry point where local read requests are dipatch to the
 /// relevant regions by LocalReader so that these requests can be handled by the
 /// relevant ReadDelegate respectively.
@@ -558,6 +634,8 @@ impl<E> ReadExecutor<E> for CachedReadDelegate<E>
 where
     E: KvEngine,
 {
+    type Response = ReadResponse<E::Snapshot>;
+
     fn get_tablet(&mut self) -> &E {
         &self.kv_engine
     }
@@ -809,12 +887,12 @@ where
                     }
                     _ => unreachable!(),
                 };
-                cmd_resp::bind_term(&mut response.response, delegate.term);
-                if let Some(snap) = response.snapshot.as_mut() {
+                response.set_term(delegate.term);
+                if let Some(snap) = response.mut_snapshot() {
                     snap.txn_ext = Some(delegate.txn_ext.clone());
                     snap.bucket_meta = delegate.bucket_meta.clone();
                 }
-                response.txn_extra_op = delegate.txn_extra_op.load();
+                response.set_txn_extra_op(delegate.txn_extra_op.load());
                 cb.invoke_read(response);
             }
             // Forward to raftstore.

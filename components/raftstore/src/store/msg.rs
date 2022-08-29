@@ -13,12 +13,13 @@ use kvproto::{
     metapb,
     metapb::RegionEpoch,
     pdpb::{self, CheckPolicy},
-    raft_cmdpb::{RaftCmdRequest, RaftCmdResponse},
+    raft_cmdpb::{RaftCmdRequest, RaftCmdResponse, Response},
     raft_serverpb::RaftMessage,
     replication_modepb::ReplicationStatus,
 };
 #[cfg(any(test, feature = "testexport"))]
 use pd_client::BucketMeta;
+use protobuf::RepeatedField;
 use raft::SnapshotStatus;
 use smallvec::{smallvec, SmallVec};
 use tikv_util::{deadline::Deadline, escape, memory::HeapSize, time::Instant};
@@ -37,19 +38,59 @@ use crate::store::{
     SnapKey,
 };
 
-pub trait ReadResponseTrait: Default {
+pub trait ReadResponseTrait<S: Snapshot>: Default {
     type Response;
 
+    fn set_term(&mut self, term: u64) {
+        unimplemented!()
+    }
+
     fn set_response(&mut self, response: Self::Response);
+
+    fn set_responses(&mut self, response: RepeatedField<Response>) {
+        unimplemented!()
+    }
+
+    fn mut_snapshot(&mut self) -> Option<&mut RegionSnapshot<S>> {
+        unimplemented!()
+    }
+
+    fn set_snapshot(&mut self, _snapshot: RegionSnapshot<S>) {
+        unimplemented!()
+    }
+
+    fn set_txn_extra_op(&mut self, op: TxnExtraOp) {
+        unimplemented!()
+    }
 
     fn set_error(&mut self, error: RaftCmdResponse);
 }
 
-impl<S: Snapshot> ReadResponseTrait for ReadResponse<S> {
+impl<S: Snapshot> ReadResponseTrait<S> for ReadResponse<S> {
     type Response = RaftCmdResponse;
+
+    fn set_term(&mut self, term: u64) {
+        if term == 0 {
+            return;
+        }
+
+        self.response.mut_header().set_current_term(term);
+    }
 
     fn set_response(&mut self, response: Self::Response) {
         self.response = response;
+    }
+
+    fn set_responses(&mut self, response: RepeatedField<Response>) {
+        self.response.set_responses(response);
+    }
+
+    fn mut_snapshot(&mut self) -> Option<&mut RegionSnapshot<S>> {
+        self.snapshot.as_mut()
+    }
+
+    fn set_snapshot(&mut self, snapshot: RegionSnapshot<S>) {
+        self.snapshot = Some(snapshot);
     }
 
     fn set_error(&mut self, error: RaftCmdResponse) {
