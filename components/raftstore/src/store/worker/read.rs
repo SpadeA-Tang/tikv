@@ -748,10 +748,10 @@ where
                         let mut local_read_ctx =
                             LocalReadContext::new(&mut self.snap_cache, read_id);
 
-                        snap_updated = local_read_ctx
-                            .maybe_update_snapshot(delegate.get_tablet(), last_valid_ts);
+                        snap_updated =
+                            local_read_ctx.maybe_update_snapshot(&self.kv_engine, last_valid_ts);
 
-                        let snapshot_ts = self.snap_cache.snapshot_ts();
+                        let snapshot_ts = local_read_ctx.snapshot_ts().unwrap();
                         if !delegate.is_in_leader_lease(snapshot_ts, &mut self.metrics) {
                             fail_point!("localreader_before_redirect", |_| {});
                             // Forward to raftstore.
@@ -790,8 +790,8 @@ where
 
                         // Stale read does not use cache, so we pass None for read_id
                         let mut local_read_ctx = LocalReadContext::new(&mut self.snap_cache, None);
-                        snap_updated = local_read_ctx
-                            .maybe_update_snapshot(delegate.get_tablet(), last_valid_ts);
+                        snap_updated =
+                            local_read_ctx.maybe_update_snapshot(&self.kv_engine, last_valid_ts);
 
                         // Getting the snapshot
                         let response =
