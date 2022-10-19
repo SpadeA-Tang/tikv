@@ -55,7 +55,7 @@ pub trait ReadExecutor {
     fn get_snapshot(
         &mut self,
         read_context: &Option<LocalReadContext<'_, Self::Tablet>>,
-    ) -> Arc<<Self::Tablet as KvEngine>::Snapshot>;
+    ) -> Option<Arc<<Self::Tablet as KvEngine>::Snapshot>>;
 
     fn get_value(
         &mut self,
@@ -68,7 +68,8 @@ pub trait ReadExecutor {
         util::check_key_in_region(key, region)?;
 
         let mut resp = Response::default();
-        let snapshot = self.get_snapshot(read_context);
+        // `get_value` is only used in v1, so unwrap for `get_snapshot` is safe
+        let snapshot = self.get_snapshot(read_context).unwrap();
         let res = if !req.get_get().get_cf().is_empty() {
             let cf = req.get_get().get_cf();
             snapshot
@@ -130,8 +131,9 @@ pub trait ReadExecutor {
                     }
                 },
                 CmdType::Snap => {
+                    // `execute` is only used in v1, so unwrap for `get_snapshot` is safe
                     let snapshot = RegionSnapshot::from_snapshot(
-                        self.get_snapshot(&local_read_ctx),
+                        self.get_snapshot(&local_read_ctx).unwrap(),
                         region.clone(),
                     );
                     response.snapshot = Some(snapshot);
@@ -695,7 +697,7 @@ where
     D: ReadExecutor + Deref<Target = ReadDelegate>,
     S: ReadExecutorProvider<Executor = D>,
 {
-    pub store_id: Cell<Option<u64>>,
+    store_id: Cell<Option<u64>>,
     store_meta: S,
     pub delegates: LruCache<u64, D>,
 }
@@ -705,6 +707,14 @@ where
     D: ReadExecutor + Deref<Target = ReadDelegate> + Clone,
     S: ReadExecutorProvider<Executor = D>,
 {
+    pub fn store_id(&self) -> Option<u64> {
+        self.store_id.get()
+    }
+
+    pub fn set_store_id(&mut self, store_id: Option<u64>) {
+        self.store_id.set(store_id);
+    }
+
     pub fn new(store_meta: S) -> Self {
         LocalReaderCore {
             store_meta,
@@ -1050,8 +1060,11 @@ where
         &self.kv_engine
     }
 
-    fn get_snapshot(&mut self, read_context: &Option<LocalReadContext<'_, E>>) -> Arc<E::Snapshot> {
-        read_context.as_ref().unwrap().snapshot().unwrap()
+    fn get_snapshot(
+        &mut self,
+        read_context: &Option<LocalReadContext<'_, E>>,
+    ) -> Option<Arc<E::Snapshot>> {
+        Some(read_context.as_ref().unwrap().snapshot().unwrap())
     }
 }
 
