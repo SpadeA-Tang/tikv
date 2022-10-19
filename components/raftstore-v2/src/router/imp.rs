@@ -75,7 +75,7 @@ impl<EK: KvEngine, ER: RaftEngine> RaftRouter<EK, ER> {
         self.router.send_raft_message(msg)
     }
 
-    pub async fn get_snapshot(
+    pub async fn query_snapshot(
         &mut self,
         req: RaftCmdRequest,
     ) -> std::result::Result<RegionSnapshot<EK::Snapshot>, RaftCmdResponse> {

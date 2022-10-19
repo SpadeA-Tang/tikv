@@ -420,6 +420,7 @@ impl<'r> SnapRequestInspector<'r> {
         }
     }
 
+    #[inline]
     fn has_applied_to_current_term(&mut self) -> bool {
         if self.delegate.applied_term == self.delegate.term {
             true
@@ -438,6 +439,7 @@ impl<'r> SnapRequestInspector<'r> {
         }
     }
 
+    #[inline]
     fn inspect_lease(&mut self) -> LeaseState {
         // TODO: disable localreader if we did not enable raft's check_quorum.
         if self.delegate.leader_lease.is_some() {
