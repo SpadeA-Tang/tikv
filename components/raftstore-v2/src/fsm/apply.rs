@@ -14,10 +14,14 @@ use crossbeam::channel::TryRecvError;
 use engine_traits::{KvEngine, TabletFactory};
 use futures::{Future, StreamExt};
 use kvproto::{metapb, raft_serverpb::RegionLocalState};
-use raftstore::store::ReadTask;
+use raftstore::store::{
+    metrics::{APPLY_TASK_WAIT_TIME_HISTOGRAM, STORE_APPLY_LOG_HISTOGRAM},
+    ReadTask,
+};
 use slog::Logger;
 use tikv_util::{
     mpsc::future::{self, Receiver, Sender, WakePolicy},
+    time::{duration_to_sec, Instant as TiInstant},
     worker::Scheduler,
 };
 
@@ -95,6 +99,8 @@ impl<EK: KvEngine, R> ApplyFsm<EK, R> {
 
 impl<EK: KvEngine, R: ApplyResReporter> ApplyFsm<EK, R> {
     pub async fn handle_all_tasks(&mut self) {
+        let mut entries_count = 0;
+        let mut received_time = TiInstant::now();
         loop {
             let mut task = match self.receiver.next().await {
                 Some(t) => t,
@@ -103,12 +109,21 @@ impl<EK: KvEngine, R: ApplyResReporter> ApplyFsm<EK, R> {
             loop {
                 match task {
                     // TODO: flush by buffer size.
-                    ApplyTask::CommittedEntries(ce) => self.apply.apply_committed_entries(ce).await,
+                    ApplyTask::CommittedEntries(ce) => {
+                        entries_count += ce.entry_and_proposals.len();
+                        self.apply.apply_committed_entries(ce).await;
+                    }
                     ApplyTask::Snapshot(snap_task) => self.apply.schedule_gen_snapshot(snap_task),
                 }
 
+                if entries_count >= 256 || received_time.saturating_elapsed().as_millis() >= 100 {
+                    self.apply.flush();
+                    entries_count = 0;
+                    received_time = TiInstant::now();
+                    let elapsed = received_time.saturating_elapsed();
+                    STORE_APPLY_LOG_HISTOGRAM.observe(duration_to_sec(elapsed));
+                }
                 // TODO: yield after some time.
-
                 // Perhaps spin sometime?
                 match self.receiver.try_recv() {
                     Ok(t) => task = t,
@@ -116,7 +131,13 @@ impl<EK: KvEngine, R: ApplyResReporter> ApplyFsm<EK, R> {
                     Err(TryRecvError::Disconnected) => return,
                 }
             }
-            self.apply.flush();
+            if entries_count != 0 {
+                self.apply.flush();
+                entries_count = 0;
+                received_time = TiInstant::now();
+                let elapsed = received_time.saturating_elapsed();
+                STORE_APPLY_LOG_HISTOGRAM.observe(duration_to_sec(elapsed));
+            }
         }
     }
 }
