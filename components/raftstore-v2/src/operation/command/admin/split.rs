@@ -118,7 +118,9 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
             .enumerate()
             .filter_map(|(i, mut split)| {
                 let key = split.take_split_key();
+                info!(self.logger, "split key with ts"; "split_key" => ?key);
                 let key = strip_timestamp_if_exists(key);
+                info!(self.logger, "split key without ts"; "split_key" => ?key);
                 if is_valid_split_key(&key, i, region) {
                     split.split_key = key;
                     Some(split)
