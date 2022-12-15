@@ -24,7 +24,7 @@ use raftstore::{
     },
     Error, Result,
 };
-use slog::{debug, info, warn, Logger};
+use slog::{debug, warn, Logger};
 use tikv_util::{
     box_err,
     codec::number::decode_u64,
@@ -259,23 +259,17 @@ where
         async move {
             defer!(raftstore::store::worker::metrics::maybe_tls_local_read_metrics_flush());
             if let Some(snap) = snap? {
-                info!(logger, "try get snapshot succeed"; "region_id" => region_id);
                 return Ok(snap);
             }
             let mut reader = reader.unwrap();
 
-            info!(logger, "try get snapshot fails, try renew"; "region_id" => region_id);
             if let Some(query_res) = reader.try_to_renew_lease(region_id, &req).await? {
                 // If query successful, try again.
                 if query_res.read().is_some() {
-                    info!(logger, "renew may succeed"; "region_id" => region_id);
                     req.mut_header().set_read_quorum(false);
                     if let Some(snap) = reader.try_get_snapshot(req)? {
-                        info!(logger, "try get snapshot succeed 2nd"; "region_id" => region_id);
                         return Ok(snap);
                     }
-                } else {
-                    info!(logger, "try renew fails -- read none"; "region_id" => region_id);
                 }
             }
 

@@ -390,17 +390,9 @@ impl<E: Engine> Endpoint<E> {
 
         // Safety: spawning this function using a `FuturePool` ensures that a TLS engine
         // exists.
-        info!(
-            "Coprocessor req, before getting snapshot";
-            "reqion_id" => tracker.req_ctx.context.region_id,
-        );
         let snapshot =
             unsafe { with_tls_engine(|engine| Self::async_snapshot(engine, &tracker.req_ctx)) }
                 .await?;
-        info!(
-            "Coprocessor req, after getting snapshot";
-            "reqion_id" => tracker.req_ctx.context.region_id,
-        );
         // When snapshot is retrieved, deadline may exceed.
         tracker.on_snapshot_finished();
         tracker.req_ctx.deadline.check()?;
