@@ -264,6 +264,11 @@ impl<S: EngineSnapshot> MvccReader<S> {
             }
         };
 
+        info!(
+            "read lock from rocks snapshot";
+            "key" => ?key,
+        );
+
         Ok(res)
     }
 
