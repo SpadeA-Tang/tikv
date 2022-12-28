@@ -112,6 +112,8 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
             read_scheduler,
             self.flush_state().clone(),
             self.storage().apply_trace().log_recovery(),
+            self.entry_storage().applied_index(),
+            self.entry_storage().applied_term(),
             logger,
         );
 
@@ -311,6 +313,11 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
                 scheduler.send(ApplyTask::ManualFlush);
             }
             self.add_pending_tick(PeerTick::Raft);
+        }
+        if !self.pause_for_recovery() && self.storage_mut().apply_trace_mut().should_flush() {
+            if let Some(scheduler) = self.apply_scheduler() {
+                scheduler.send(ApplyTask::ManualFlush);
+            }
         }
     }
 }
