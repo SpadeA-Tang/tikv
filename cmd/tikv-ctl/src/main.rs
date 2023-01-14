@@ -222,7 +222,7 @@ trait DebugExecutor {
         }
     }
 
-    fn dump_raft_log(&self, region: u64, index: u64) {
+    fn dump_raft_log(&self, region: u64, index: u64, binary: bool) {
         let idx_key = keys::raft_log_key(region, index);
         println!("idx_key: {}", escape(&idx_key));
         println!("region: {}", region);
@@ -234,6 +234,11 @@ trait DebugExecutor {
         println!("msg len: {}", data.len());
 
         if data.is_empty() {
+            return;
+        }
+
+        if binary {
+            println!("data: \n{}", hex::encode_upper(&data));
             return;
         }
 
@@ -1196,9 +1201,17 @@ fn main() {
                                 .help("Set the raft log index"),
                         )
                         .arg(
+                            Arg::with_name("binary")
+                                .required_unless("key")
+                                .conflicts_with("key")
+                                .short("b")
+                                .takes_value(true)
+                                .help("Print binary if set"),
+                        )
+                        .arg(
                             Arg::with_name("key")
-                                .required_unless_one(&["region", "index"])
-                                .conflicts_with_all(&["region", "index"])
+                                .required_unless_one(&["region", "index", "binary"])
+                                .conflicts_with_all(&["region", "index", "binary"])
                                 .short("k")
                                 .takes_value(true)
                                 .help(raw_key_hint)
@@ -2052,14 +2065,15 @@ fn main() {
         debug_executor.dump_value(cf, key);
     } else if let Some(matches) = matches.subcommand_matches("raft") {
         if let Some(matches) = matches.subcommand_matches("log") {
-            let (id, index) = if let Some(key) = matches.value_of("key") {
+            let (id, index, binary) = if let Some(key) = matches.value_of("key") {
                 keys::decode_raft_log_key(&unescape(key)).unwrap()
             } else {
                 let id = matches.value_of("region").unwrap().parse().unwrap();
                 let index = matches.value_of("index").unwrap().parse().unwrap();
-                (id, index)
+                let binary = matches.value_of("binary").unwrap().parse().unwrap();
+                (id, index, false)
             };
-            debug_executor.dump_raft_log(id, index);
+            debug_executor.dump_raft_log(id, index, binary);
         } else if let Some(matches) = matches.subcommand_matches("region") {
             let skip_tombstone = matches.is_present("skip-tombstone");
             if let Some(id) = matches.value_of("region") {
