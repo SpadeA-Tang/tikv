@@ -2066,12 +2066,13 @@ fn main() {
     } else if let Some(matches) = matches.subcommand_matches("raft") {
         if let Some(matches) = matches.subcommand_matches("log") {
             let (id, index, binary) = if let Some(key) = matches.value_of("key") {
-                keys::decode_raft_log_key(&unescape(key)).unwrap()
+                let (id, index) = keys::decode_raft_log_key(&unescape(key)).unwrap();
+                (id, index, false)
             } else {
                 let id = matches.value_of("region").unwrap().parse().unwrap();
                 let index = matches.value_of("index").unwrap().parse().unwrap();
                 let binary = matches.value_of("binary").unwrap().parse().unwrap();
-                (id, index, false)
+                (id, index, binary)
             };
             debug_executor.dump_raft_log(id, index, binary);
         } else if let Some(matches) = matches.subcommand_matches("region") {
