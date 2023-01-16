@@ -14,11 +14,13 @@ use grpcio::{
     ChannelBuilder, ClientCStreamReceiver, ClientCStreamSender, Environment, RpcStatusCode,
     WriteFlags,
 };
+use kvproto::raft_cmdpb::RaftCmdRequest;
 use kvproto::raft_serverpb::{Done, RaftMessage};
 use kvproto::tikvpb::{BatchRaftMessage, TikvClient};
 use raft::SnapshotStatus;
 use raftstore::errors::DiscardReason;
 use raftstore::router::RaftStoreRouter;
+use raftstore::store::util;
 use security::SecurityManager;
 use std::collections::VecDeque;
 use std::ffi::CString;
@@ -400,6 +402,14 @@ where
                 self.send_snapshot_sock(msg);
                 continue;
             } else {
+                if msg.has_message() {
+                    let region_id = msg.get_region_id();
+                    let msg = msg.get_message();
+                    for m in msg.get_entries() {
+                        let tag = format!("[region {}] check when sending", region_id);
+                        let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                    }
+                }
                 self.buffer.push(msg);
             }
         }

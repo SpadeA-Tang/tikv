@@ -1,5 +1,6 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
+use raftstore::store::util;
 use std::sync::Arc;
 use tikv_util::time::{duration_to_ms, duration_to_sec, Instant};
 
@@ -622,6 +623,14 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
         let ch = self.ch.clone();
         ctx.spawn(async move {
             let res = stream.map_err(Error::from).try_for_each(move |msg| {
+                if msg.has_message() {
+                    let region_id = msg.get_region_id();
+                    let msg = msg.get_message();
+                    for m in msg.get_entries() {
+                        let tag = format!("[region {}] check when receiving", region_id);
+                        let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                    }
+                }
                 RAFT_MESSAGE_RECV_COUNTER.inc();
                 let to_store_id = msg.get_to_peer().get_store_id();
                 if to_store_id != store_id {
@@ -664,6 +673,14 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
                 RAFT_MESSAGE_RECV_COUNTER.inc_by(len as i64);
                 RAFT_MESSAGE_BATCH_SIZE.observe(len as f64);
                 for msg in msgs.take_msgs().into_iter() {
+                    if msg.has_message() {
+                        let region_id = msg.get_region_id();
+                        let msg = msg.get_message();
+                        for m in msg.get_entries() {
+                            let tag = format!("[region {}] check when receiving", region_id);
+                            let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                        }
+                    }
                     let to_store_id = msg.get_to_peer().get_store_id();
                     if to_store_id != store_id {
                         return future::err(Error::from(RaftStoreError::StoreNotMatch {
