@@ -405,8 +405,8 @@ where
                 if msg.has_message() {
                     let region_id = msg.get_region_id();
                     let msg = msg.get_message();
+                    let tag = format!("[region {}] check when sending", region_id);
                     for m in msg.get_entries() {
-                        let tag = format!("[region {}] check when sending", region_id);
                         let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
                     }
                 }
