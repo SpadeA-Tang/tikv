@@ -1,5 +1,6 @@
 // Copyright 2017 TiKV Project Authors. Licensed under Apache-2.0.
 
+use raft::prelude::EntryType;
 use raftstore::store::util;
 use std::sync::Arc;
 use tikv_util::time::{duration_to_ms, duration_to_sec, Instant};
@@ -628,7 +629,9 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
                     let msg = msg.get_message();
                     let tag = format!("[region {}] check when receiving", region_id);
                     for m in msg.get_entries() {
-                        let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                        if m.get_entry_type() == EntryType::EntryNormal {
+                            let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                        }
                     }
                 }
                 RAFT_MESSAGE_RECV_COUNTER.inc();
@@ -678,7 +681,10 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
                         let msg = msg.get_message();
                         let tag = format!("[region {}] check when receiving", region_id);
                         for m in msg.get_entries() {
-                            let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                            if m.get_entry_type() == EntryType::EntryNormal {
+                                let _cmd: RaftCmdRequest =
+                                    util::parse_data_at(&m.data, m.index, &tag);
+                            }
                         }
                     }
                     let to_store_id = msg.get_to_peer().get_store_id();

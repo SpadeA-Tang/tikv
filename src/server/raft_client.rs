@@ -17,6 +17,7 @@ use grpcio::{
 use kvproto::raft_cmdpb::RaftCmdRequest;
 use kvproto::raft_serverpb::{Done, RaftMessage};
 use kvproto::tikvpb::{BatchRaftMessage, TikvClient};
+use raft::prelude::EntryType;
 use raft::SnapshotStatus;
 use raftstore::errors::DiscardReason;
 use raftstore::router::RaftStoreRouter;
@@ -407,7 +408,9 @@ where
                     let msg = msg.get_message();
                     let tag = format!("[region {}] check when sending", region_id);
                     for m in msg.get_entries() {
-                        let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                        if m.get_entry_type() == EntryType::EntryNormal {
+                            let _cmd: RaftCmdRequest = util::parse_data_at(&m.data, m.index, &tag);
+                        }
                     }
                 }
                 self.buffer.push(msg);
