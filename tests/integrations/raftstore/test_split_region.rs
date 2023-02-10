@@ -645,101 +645,86 @@ fn test_node_split_region_after_reboot_with_config_change() {
     }
 }
 
-fn test_split_epoch_not_match<T: test_raftstore::Simulator>(
-    cluster: &mut test_raftstore::Cluster<T>,
-    right_derive: bool,
-) {
-    cluster.cfg.raft_store.right_derive_when_split = right_derive;
-    cluster.run();
-    let pd_client = Arc::clone(&cluster.pd_client);
-    let old = pd_client.get_region(b"k1").unwrap();
-    // Construct a get command using old region meta.
-    let get_old = new_request(
-        old.get_id(),
-        old.get_region_epoch().clone(),
-        vec![new_get_cmd(b"k1")],
-        false,
-    );
-    cluster.must_split(&old, b"k2");
-    let r = pd_client.get_region(b"k3").unwrap();
-    let get_middle = new_request(
-        r.get_id(),
-        r.get_region_epoch().clone(),
-        vec![new_get_cmd(b"k3")],
-        false,
-    );
-    cluster.must_split(&r, b"k3");
-    let r = pd_client.get_region(b"k4").unwrap();
-    cluster.must_split(&r, b"k4");
-    let regions: Vec<_> = [b"k0", b"k2", b"k3", b"k4"]
-        .iter()
-        .map(|&k| pd_client.get_region(k).unwrap())
-        .collect();
-
-    let new = regions[3].clone();
-    // Newer epoch also triggers the EpochNotMatch error.
-    let mut latest_epoch = new.get_region_epoch().clone();
-    let latest_version = latest_epoch.get_version() + 1;
-    latest_epoch.set_version(latest_version);
-    let get_new = new_request(new.get_id(), latest_epoch, vec![new_get_cmd(b"k1")], false);
-
-    let mut cases = vec![
-        // All regions should be returned as request uses an oldest epoch.
-        (get_old, regions.clone()),
-        // Only new split regions should be returned.
-        (get_middle, regions[1..].to_vec()),
-        // Epoch is too new that TiKV can't offer any useful hint.
-        (get_new, vec![regions[3].clone()]),
-    ];
-    if right_derive {
-        // TiKV search backward when right derive.
-        cases[0].1.reverse();
-        cases[1].1.reverse();
-    }
-    for (get, exp) in cases {
-        let resp = cluster
-            .call_command_on_leader(get.clone(), Duration::from_secs(5))
-            .unwrap();
-        assert!(resp.get_header().has_error(), "{:?}", get);
-        assert!(
-            resp.get_header().get_error().has_epoch_not_match(),
-            "{:?}",
-            get
-        );
-        assert_eq!(
-            resp.get_header()
-                .get_error()
-                .get_epoch_not_match()
-                .get_current_regions(),
-            &*exp,
-            "{:?}",
-            get
-        );
-    }
-}
-
-#[test]
+#[test_case(test_raftstore::new_node_cluster)]
+#[test_case(test_raftstore::new_server_cluster)]
+#[test_case(test_raftstore_v2::new_node_cluster)]
+#[test_case(test_raftstore_v2::new_server_cluster)]
 fn test_server_split_epoch_not_match_left_derive() {
-    let mut cluster = test_raftstore::new_server_cluster(0, 3);
-    test_split_epoch_not_match(&mut cluster, false);
-}
+    let test_split_epoch_not_match = |right_derive: bool| {
+        let mut cluster = new_cluster(0, 3);
+        cluster.cfg.raft_store.right_derive_when_split = right_derive;
+        cluster.run();
+        let pd_client = Arc::clone(&cluster.pd_client);
+        let old = pd_client.get_region(b"k1").unwrap();
+        // Construct a get command using old region meta.
+        let get_old = new_request(
+            old.get_id(),
+            old.get_region_epoch().clone(),
+            vec![new_get_cmd(b"k1")],
+            false,
+        );
+        cluster.must_split(&old, b"k2");
+        let r = pd_client.get_region(b"k3").unwrap();
+        let get_middle = new_request(
+            r.get_id(),
+            r.get_region_epoch().clone(),
+            vec![new_get_cmd(b"k3")],
+            false,
+        );
+        cluster.must_split(&r, b"k3");
+        let r = pd_client.get_region(b"k4").unwrap();
+        cluster.must_split(&r, b"k4");
+        let regions: Vec<_> = [b"k0", b"k2", b"k3", b"k4"]
+            .iter()
+            .map(|&k| pd_client.get_region(k).unwrap())
+            .collect();
 
-#[test]
-fn test_server_split_epoch_not_match_right_derive() {
-    let mut cluster = test_raftstore::new_server_cluster(0, 3);
-    test_split_epoch_not_match(&mut cluster, true);
-}
+        let new = regions[3].clone();
+        // Newer epoch also triggers the EpochNotMatch error.
+        let mut latest_epoch = new.get_region_epoch().clone();
+        let latest_version = latest_epoch.get_version() + 1;
+        latest_epoch.set_version(latest_version);
+        let get_new = new_request(new.get_id(), latest_epoch, vec![new_get_cmd(b"k1")], false);
 
-#[test]
-fn test_node_split_epoch_not_match_left_derive() {
-    let mut cluster = test_raftstore::new_node_cluster(0, 3);
-    test_split_epoch_not_match(&mut cluster, false);
-}
+        let mut cases = vec![
+            // All regions should be returned as request uses an oldest epoch.
+            (get_old, regions.clone()),
+            // Only new split regions should be returned.
+            (get_middle, regions[1..].to_vec()),
+            // Epoch is too new that TiKV can't offer any useful hint.
+            (get_new, vec![regions[3].clone()]),
+        ];
+        if right_derive {
+            // TiKV search backward when right derive.
+            cases[0].1.reverse();
+            cases[1].1.reverse();
+        }
+        for (get, exp) in cases {
+            let resp = cluster
+                .call_command_on_leader(get.clone(), Duration::from_secs(5))
+                .unwrap();
+            assert!(resp.get_header().has_error(), "{:?}", get);
+            assert!(
+                resp.get_header().get_error().has_epoch_not_match(),
+                "{:?}",
+                get
+            );
+            assert_eq!(
+                resp.get_header()
+                    .get_error()
+                    .get_epoch_not_match()
+                    .get_current_regions(),
+                &*exp,
+                "{:?}",
+                get
+            );
+        }
+    };
 
-#[test]
-fn test_node_split_epoch_not_match_right_derive() {
-    let mut cluster = test_raftstore::new_node_cluster(0, 3);
-    test_split_epoch_not_match(&mut cluster, true);
+    test_split_epoch_not_match(false);
+
+    // right_derive
+    test_split_epoch_not_match(true);
 }
 
 #[test_case(test_raftstore::new_node_cluster)]
@@ -780,10 +765,11 @@ fn test_node_quick_election_after_split() {
     assert!(new_leader.is_some());
 }
 
-#[test]
+#[test_case(test_raftstore::new_node_cluster)]
+#[test_case(test_raftstore_v2::new_node_cluster)]
 fn test_node_split_region() {
     let count = 5;
-    let mut cluster = test_raftstore::new_node_cluster(0, count);
+    let mut cluster = new_cluster(0, count);
     // length of each key+value
     let item_len = 74;
     // make bucket's size to item_len, which means one row one bucket
