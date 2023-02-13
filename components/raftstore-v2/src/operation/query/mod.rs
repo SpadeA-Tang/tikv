@@ -11,21 +11,25 @@
 //! Follower's read index and replica read is implemenented replica module.
 //! Leader's read index and lease renew is implemented in lease module.
 
-use std::cmp;
+use std::{
+    cmp,
+    collections::Bound::{Excluded, Unbounded},
+};
 
 use crossbeam::channel::TrySendError;
 use engine_traits::{KvEngine, RaftEngine};
+use keys::enc_end_key;
 use kvproto::{
-    errorpb,
+    errorpb, metapb,
     raft_cmdpb::{CmdType, RaftCmdRequest, RaftCmdResponse, StatusCmdType},
 };
 use raft::{Ready, StateRole};
 use raftstore::{
     errors::RAFTSTORE_IS_BUSY,
     store::{
-        cmd_resp, local_metrics::RaftMetrics, metrics::RAFT_READ_INDEX_PENDING_COUNT,
-        msg::ErrorCallback, region_meta::RegionMeta, util, util::LeaseState, GroupState,
-        ReadIndexContext, ReadProgress, RequestPolicy, Transport,
+        cmd_resp, metrics::RAFT_READ_INDEX_PENDING_COUNT, msg::ErrorCallback,
+        region_meta::RegionMeta, util, util::LeaseState, GroupState, ReadIndexContext,
+        ReadProgress, RequestPolicy, Transport,
     },
     Error, Result,
 };
@@ -47,6 +51,12 @@ mod local;
 mod replica;
 
 pub(crate) use self::local::{LocalReader, ReadDelegatePair, SharedReadTablet};
+
+/// Limits the maximum number of regions returned by error.
+///
+/// Another choice is using coprocessor batch limit, but 10 should be a good fit
+/// in most case.
+const MAX_REGIONS_IN_ERROR: usize = 10;
 
 impl<'a, EK: KvEngine, ER: RaftEngine, T: raftstore::store::Transport>
     PeerFsmDelegate<'a, EK, ER, T>
@@ -74,11 +84,7 @@ impl<'a, EK: KvEngine, ER: RaftEngine, T: raftstore::store::Transport>
     #[inline]
     pub fn on_query(&mut self, req: RaftCmdRequest, ch: QueryResChannel) {
         if !req.has_status_request() {
-            if let Err(e) = self
-                .fsm
-                .peer_mut()
-                .validate_query_msg(&req, &mut self.store_ctx.raft_metrics)
-            {
+            if let Err(e) = self.fsm.peer_mut().validate_query_msg(self.store_ctx, &req) {
                 let resp = cmd_resp::new_error(e);
                 ch.report_error(resp);
                 return;
@@ -104,10 +110,10 @@ impl<'a, EK: KvEngine, ER: RaftEngine, T: raftstore::store::Transport>
 }
 
 impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
-    fn validate_query_msg(
+    fn validate_query_msg<T>(
         &mut self,
+        ctx: &mut StoreContext<EK, ER, T>,
         msg: &RaftCmdRequest,
-        raft_metrics: &mut RaftMetrics,
     ) -> Result<()> {
         // check query specific requirements
         if msg.has_admin_request() {
@@ -129,7 +135,7 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
 
         // Check store_id, make sure that the msg is dispatched to the right place.
         if let Err(e) = util::check_store_id(msg.get_header(), self.peer().get_store_id()) {
-            raft_metrics.invalid_proposal.mismatch_store_id.inc();
+            ctx.raft_metrics.invalid_proposal.mismatch_store_id.inc();
             return Err(e);
         }
 
@@ -153,13 +159,13 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
 
         let allow_replica_read = msg.get_header().get_replica_read();
         if !self.is_leader() && !is_read_index_request && !allow_replica_read {
-            raft_metrics.invalid_proposal.not_leader.inc();
+            ctx.raft_metrics.invalid_proposal.not_leader.inc();
             return Err(Error::NotLeader(self.region_id(), self.leader()));
         }
 
         // peer_id must be the same as peer's.
         if let Err(e) = util::check_peer_id(msg.get_header(), self.peer_id()) {
-            raft_metrics.invalid_proposal.mismatch_peer_id.inc();
+            ctx.raft_metrics.invalid_proposal.mismatch_peer_id.inc();
             return Err(e);
         }
 
@@ -167,12 +173,75 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
 
         // Check whether the term is stale.
         if let Err(e) = util::check_term(msg.get_header(), self.term()) {
-            raft_metrics.invalid_proposal.stale_command.inc();
+            ctx.raft_metrics.invalid_proposal.stale_command.inc();
             return Err(e);
         }
 
         // TODO: add check of sibling region for split
-        util::check_req_region_epoch(msg, self.region(), true)
+        match util::check_req_region_epoch(msg, self.region(), true) {
+            Err(Error::EpochNotMatch(m, mut new_regions)) => {
+                // Attach the region which might be split from the current region. But it
+                // doesn't matter if the region is not split from the current region. If the
+                // region meta received by the TiKV driver is newer than the meta cached in the
+                // driver, the meta is updated.
+                let requested_version = msg.get_header().get_region_epoch().version;
+                self.collect_sibling_region(ctx, requested_version, &mut new_regions);
+                ctx.raft_metrics.invalid_proposal.epoch_not_match.inc();
+                Err(Error::EpochNotMatch(m, new_regions))
+            }
+            Err(e) => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    fn collect_sibling_region<T>(
+        &self,
+        ctx: &mut StoreContext<EK, ER, T>,
+        requested_version: u64,
+        regions: &mut Vec<metapb::Region>,
+    ) {
+        let mut max_version = self.region().get_region_epoch().version;
+        if requested_version >= max_version {
+            // Out information is stale.
+            return;
+        }
+        // Current region is included in the vec.
+        let mut collect_cnt = max_version - requested_version;
+        let meta = ctx.store_meta.as_ref().lock().unwrap();
+        let mut ranges = if ctx.cfg.right_derive_when_split {
+            let anchor = Excluded((enc_end_key(self.region()), u64::MIN));
+            meta.region_ranges
+                .range((Unbounded::<(Vec<u8>, u64)>, anchor))
+        } else {
+            let anchor = Excluded((enc_end_key(self.region()), u64::MAX));
+            meta.region_ranges
+                .range((anchor, Unbounded::<(Vec<u8>, u64)>))
+        };
+
+        for _ in 0..MAX_REGIONS_IN_ERROR {
+            let res = if ctx.cfg.right_derive_when_split {
+                ranges.next_back()
+            } else {
+                ranges.next()
+            };
+            if let Some((_, id)) = res {
+                let (r, _) = &meta.regions[id];
+                collect_cnt -= 1;
+                // For example, A is split into B, A, and then B is split into C, B.
+                if r.get_region_epoch().version >= max_version {
+                    // It doesn't matter if it's a false positive, as it's limited by
+                    // MAX_REGIONS_IN_ERROR.
+                    collect_cnt += r.get_region_epoch().version - max_version;
+                    max_version = r.get_region_epoch().version;
+                }
+                regions.push(r.to_owned());
+                if collect_cnt == 0 {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
     }
 
     // For these cases it won't be proposed:
