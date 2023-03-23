@@ -9,7 +9,7 @@ use raftstore::store::{
     msg::ReadCallback, propose_read_index, should_renew_lease, util::LeaseState, ReadDelegate,
     ReadIndexRequest, ReadProgress, Transport,
 };
-use slog::debug;
+use slog::{debug, info};
 use tikv_util::time::monotonic_raw_now;
 use time::Timespec;
 use tracker::GLOBAL_TRACKERS;
@@ -67,7 +67,7 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
         let mut read = ReadIndexRequest::with_command(id, req, ch, now);
         read.addition_request = request.map(Box::new);
         self.pending_reads_mut().push_back(read, true);
-        debug!(
+        info!(
             self.logger,
             "request to get a read index";
             "request_id" => ?id,

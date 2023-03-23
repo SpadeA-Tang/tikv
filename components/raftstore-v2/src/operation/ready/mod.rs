@@ -34,8 +34,8 @@ use raft::{eraftpb, prelude::MessageType, Ready, SnapshotStatus, StateRole, INVA
 use raftstore::{
     coprocessor::{RegionChangeEvent, RoleChange},
     store::{
-        needs_evict_entry_cache, util, worker_metrics::SNAP_COUNTER, FetchedLogs, ReadProgress,
-        Transport, WriteCallback, WriteTask,
+        needs_evict_entry_cache, util, worker_metrics::SNAP_COUNTER, FetchedLogs, ReadIndexContext,
+        ReadProgress, Transport, WriteCallback, WriteTask,
     },
 };
 use slog::{debug, error, info, trace, warn};
@@ -176,13 +176,29 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
         ctx: &mut StoreContext<EK, ER, T>,
         mut msg: Box<RaftMessage>,
     ) {
-        info!(
+        debug!(
             self.logger,
             "handle raft message";
             "message_type" => %util::MsgType(&msg),
             "from_peer_id" => msg.get_from_peer().get_id(),
             "to_peer_id" => msg.get_to_peer().get_id(),
         );
+        let msg_type = msg.as_ref().get_message().get_msg_type();
+        if msg_type == MessageType::MsgHeartbeat || msg_type == MessageType::MsgHeartbeatResponse {
+            let from_peer_id = msg.get_from_peer().get_id();
+            let to_peer_id = msg.get_to_peer().get_id();
+            let msg = msg.as_ref().get_message();
+            let bytes = msg.get_context();
+            info!(
+                self.logger,
+                "handle raft message with read index";
+                "message_type" => ?msg_type,
+                "read_index_context" => ?ReadIndexContext::parse(bytes),
+                "from_peer_id" => from_peer_id,
+                "to_peer_id" => to_peer_id,
+            );
+        }
+
         if self.pause_for_recovery() && msg.get_message().get_msg_type() == MessageType::MsgAppend {
             ctx.raft_metrics.message_dropped.recovery.inc();
             return;
