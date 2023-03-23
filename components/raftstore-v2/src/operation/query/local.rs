@@ -439,6 +439,12 @@ where
         // while the raftstore doesn't. So we need to trigger an update
         // explicitly. TODO: find a way to reduce the triggered heartbeats.
         req.mut_header().set_read_quorum(true);
+        info!(
+            self.logger,
+            "try to renew lease";
+            "req" => ?req,
+            "region_id" => region_id,
+        );
         let (msg, sub) = PeerMsg::raft_query(req);
         let res = match MsgRouter::send(&self.router, region_id, msg) {
             Ok(()) => Ok(sub),

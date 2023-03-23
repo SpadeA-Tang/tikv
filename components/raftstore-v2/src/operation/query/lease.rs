@@ -103,7 +103,7 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
         &self,
         read_index_req: &mut ReadIndexRequest<QueryResChannel>,
     ) {
-        debug!(
+        info!(
             self.logger,
             "handle reads with a read index";
             "request_id" => ?read_index_req.id,
