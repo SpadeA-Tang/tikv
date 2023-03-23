@@ -176,7 +176,7 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
         ctx: &mut StoreContext<EK, ER, T>,
         mut msg: Box<RaftMessage>,
     ) {
-        debug!(
+        info!(
             self.logger,
             "handle raft message";
             "message_type" => %util::MsgType(&msg),
