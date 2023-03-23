@@ -25,7 +25,7 @@ use raftstore::{
     },
     Result,
 };
-use slog::{debug, Logger};
+use slog::{debug, info, Logger};
 use tikv_util::{box_err, codec::number::decode_u64, time::monotonic_raw_now, Either};
 use time::Timespec;
 use txn_types::WriteBatchFlags;
@@ -276,6 +276,10 @@ where
         mut req: RaftCmdRequest,
     ) -> impl Future<Output = std::result::Result<RegionSnapshot<E::Snapshot>, RaftCmdResponse>> + Send
     {
+        info!(
+            self.logger,
+            "acquire snapshot";
+        );
         let region_id = req.header.get_ref().region_id;
         let mut tried_cnt = 0;
         let res = loop {
@@ -300,11 +304,22 @@ where
         };
 
         worker_metrics::maybe_tls_local_read_metrics_flush();
+        let logger = self.logger.clone();
 
         async move {
             let (mut fut, mut reader) = match res {
-                Either::Left(Ok(snap)) => return Ok(snap),
-                Either::Left(Err(e)) => return Err(e),
+                Either::Left(Ok(snap)) => {
+                    info!(logger, "return snapshot at first place";);
+                    return Ok(snap);
+                }
+                Either::Left(Err(e)) => {
+                    info!(
+                        logger,
+                        "fail to acquire snapshot";
+                        "error" => ?e,
+                    );
+                    return Err(e);
+                }
                 Either::Right((fut, reader)) => (fut, reader),
             };
 
@@ -315,10 +330,19 @@ where
                         if query_res.read().is_none() {
                             let QueryResult::Response(res) = query_res else { unreachable!() };
                             assert!(res.get_header().has_error(), "{:?}", res);
+                            info!(
+                                logger,
+                                "fail to acquire snapshot";
+                                "res" => ?res,
+                            );
                             return Err(res);
                         }
                     }
                     None => {
+                        info!(
+                            logger,
+                            "failed to extend lease: canceled";
+                        );
                         return Err(fail_resp(format!(
                             "internal error: failed to extend lease: canceled: {}",
                             region_id
@@ -331,14 +355,28 @@ where
                 loop {
                     let r = reader.try_get_snapshot(&req);
                     match r {
-                        ReadResult::Ok(snap) => return Ok(snap),
-                        ReadResult::Err(e) => return Err(e),
+                        ReadResult::Ok(snap) => {
+                            info!(logger, "return snapshot after retry";);
+                            return Ok(snap);
+                        }
+                        ReadResult::Err(e) => {
+                            info!(
+                                logger,
+                                "fail to acquire snapshot after retry";
+                                "error" => ?e,
+                            );
+                            return Err(e);
+                        }
                         ReadResult::Redirect => {
                             tried_cnt += 1;
                             if tried_cnt < 10 {
                                 fut = reader.try_to_renew_lease(region_id, &req);
                                 break;
                             }
+                            info!(
+                                logger,
+                                "can't handle msg in local reader";
+                            );
                             return Err(fail_resp(format!(
                                 "internal error: can't handle msg in local reader for {}",
                                 region_id
@@ -349,6 +387,10 @@ where
                             if tried_cnt < 10 {
                                 continue;
                             }
+                            info!(
+                                logger,
+                                "failed to get valid dalegate";
+                            );
                             return Err(fail_resp(format!(
                                 "internal error: failed to get valid dalegate for {}",
                                 region_id
