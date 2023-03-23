@@ -278,7 +278,7 @@ where
     {
         info!(
             self.logger,
-            "acquire snapshot";
+            "#snapshot acquire snapshot";
         );
         let region_id = req.header.get_ref().region_id;
         let mut tried_cnt = 0;
@@ -296,7 +296,7 @@ where
                         continue;
                     }
                     break Either::Left(Err(fail_resp(format!(
-                        "internal error: failed to get valid dalegate for {}",
+                        "#snapshot internal error: failed to get valid dalegate for {}",
                         region_id
                     ))));
                 }
@@ -309,13 +309,13 @@ where
         async move {
             let (mut fut, mut reader) = match res {
                 Either::Left(Ok(snap)) => {
-                    info!(logger, "return snapshot at first place";);
+                    info!(logger, "#snapshot return snapshot at first place";);
                     return Ok(snap);
                 }
                 Either::Left(Err(e)) => {
                     info!(
                         logger,
-                        "fail to acquire snapshot";
+                        "#snapshot fail to acquire snapshot";
                         "error" => ?e,
                     );
                     return Err(e);
@@ -332,7 +332,7 @@ where
                             assert!(res.get_header().has_error(), "{:?}", res);
                             info!(
                                 logger,
-                                "fail to acquire snapshot";
+                                "#snapshot fail to acquire snapshot";
                                 "res" => ?res,
                             );
                             return Err(res);
@@ -341,7 +341,7 @@ where
                     None => {
                         info!(
                             logger,
-                            "failed to extend lease: canceled";
+                            "#snapshot failed to extend lease: canceled";
                         );
                         return Err(fail_resp(format!(
                             "internal error: failed to extend lease: canceled: {}",
