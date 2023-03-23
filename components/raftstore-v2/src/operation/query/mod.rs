@@ -198,6 +198,11 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
             let read_index_ctx = ReadIndexContext::parse(state.request_ctx.as_slice()).unwrap();
             (read_index_ctx.id, read_index_ctx.locked, state.index)
         });
+        info!(
+            self.logger,
+            "apply reads";
+            "states" => ?states,
+        );
         // The follower may lost `ReadIndexResp`, so the pending_reads does not
         // guarantee the orders are consistent with read_states. `advance` will
         // update the `read_index` of read request that before this successful
@@ -219,6 +224,16 @@ impl<EK: KvEngine, ER: RaftEngine> Peer<EK, ER> {
             if self.ready_to_handle_read() {
                 while let Some(mut read) = self.pending_reads_mut().pop_front() {
                     self.respond_read_index(&mut read);
+                }
+            } else {
+                if !self.applied_to_current_term() {
+                    info!(self.logger, "not applied to current term";);
+                }
+                if self.proposal_control().is_splitting() {
+                    info!(self.logger, "is splitting";);
+                }
+                if self.proposal_control().is_merging() {
+                    info!(self.logger, "is ismerging";);
                 }
             }
         }
