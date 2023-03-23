@@ -276,11 +276,14 @@ where
         mut req: RaftCmdRequest,
     ) -> impl Future<Output = std::result::Result<RegionSnapshot<E::Snapshot>, RaftCmdResponse>> + Send
     {
+        let region_id = req.header.get_ref().region_id;
+        let store_id = self.local_reader.store_id.get().unwrap_or(0);
         info!(
             self.logger,
             "#snapshot acquire snapshot";
+            "region_id" => region_id,
+            "store_id" => store_id,
         );
-        let region_id = req.header.get_ref().region_id;
         let mut tried_cnt = 0;
         let res = loop {
             let res = self.try_get_snapshot(&req);
@@ -309,13 +312,20 @@ where
         async move {
             let (mut fut, mut reader) = match res {
                 Either::Left(Ok(snap)) => {
-                    info!(logger, "#snapshot return snapshot at first place";);
+                    info!(
+                        logger,
+                        "#snapshot return snapshot at first place";
+                        "region_id" => region_id,
+                        "store_id" => store_id,
+                    );
                     return Ok(snap);
                 }
                 Either::Left(Err(e)) => {
                     info!(
                         logger,
                         "#snapshot fail to acquire snapshot";
+                        "region_id" => region_id,
+                        "store_id" => store_id,
                         "error" => ?e,
                     );
                     return Err(e);
@@ -333,6 +343,8 @@ where
                             info!(
                                 logger,
                                 "#snapshot fail to acquire snapshot";
+                                "region_id" => region_id,
+                                "store_id" => store_id,
                                 "res" => ?res,
                             );
                             return Err(res);
@@ -342,6 +354,8 @@ where
                         info!(
                             logger,
                             "#snapshot failed to extend lease: canceled";
+                            "region_id" => region_id,
+                            "store_id" => store_id,
                         );
                         return Err(fail_resp(format!(
                             "internal error: failed to extend lease: canceled: {}",
@@ -356,13 +370,20 @@ where
                     let r = reader.try_get_snapshot(&req);
                     match r {
                         ReadResult::Ok(snap) => {
-                            info!(logger, "return snapshot after retry";);
+                            info!(
+                                logger,
+                                "#snapshot return snapshot after retry";
+                                "region_id" => region_id,
+                                "store_id" => store_id,
+                            );
                             return Ok(snap);
                         }
                         ReadResult::Err(e) => {
                             info!(
                                 logger,
-                                "fail to acquire snapshot after retry";
+                                "#snapshot fail to acquire snapshot after retry";
+                                "region_id" => region_id,
+                                "store_id" => store_id,
                                 "error" => ?e,
                             );
                             return Err(e);
@@ -375,7 +396,9 @@ where
                             }
                             info!(
                                 logger,
-                                "can't handle msg in local reader";
+                                "#snapshot fail to handle msg in local reader";
+                                "region_id" => region_id,
+                                "store_id" => store_id,
                             );
                             return Err(fail_resp(format!(
                                 "internal error: can't handle msg in local reader for {}",
@@ -389,7 +412,9 @@ where
                             }
                             info!(
                                 logger,
-                                "failed to get valid dalegate";
+                                "#snapshot failed to get valid dalegate";
+                                "region_id" => region_id,
+                                "store_id" => store_id,
                             );
                             return Err(fail_resp(format!(
                                 "internal error: failed to get valid dalegate for {}",
