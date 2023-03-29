@@ -475,52 +475,31 @@ impl<EK: KvEngine, R: ApplyResReporter> Apply<EK, R> {
         // will never flush.
         // We will freeze the memtable rather than flush it in the following PR.
         let tablet = self.tablet().clone();
-        let mut checkpointer = tablet.new_checkpointer().unwrap_or_else(|e| {
-            slog_panic!(
-                self.logger,
-                "fails to create checkpoint object";
-                "error" => ?e
-            )
-        });
 
         let now = Instant::now();
         let reg = self.tablet_registry();
+        let mut split_temp_paths: Vec<_> = vec![];
         for new_region in &regions {
             let new_region_id = new_region.id;
             if new_region_id == region_id {
-                continue;
+                let derived_path = self.tablet_registry().tablet_path(region_id, log_index);
+                split_temp_paths.push(derived_path);
+            } else {
+                let split_temp_path = temp_split_path(reg, new_region_id);
+                split_temp_paths.push(split_temp_path);
             }
-
-            let split_temp_path = temp_split_path(reg, new_region_id);
-            checkpointer
-                .create_at(&split_temp_path, None, 0)
-                .unwrap_or_else(|e| {
-                    slog_panic!(
-                        self.logger,
-                        "fails to create checkpoint";
-                        "path" => %split_temp_path.display(),
-                        "error" => ?e
-                    )
-                });
         }
 
-        let derived_path = self.tablet_registry().tablet_path(region_id, log_index);
-        // If it's recovered from restart, it's possible the target path exists already.
-        // And because checkpoint is atomic, so we don't need to worry about corruption.
-        // And it's also wrong to delete it and remake as it may has applied and flushed
-        // some data to the new checkpoint before being restarted.
-        if !derived_path.exists() {
-            checkpointer
-                .create_at(&derived_path, None, 0)
-                .unwrap_or_else(|e| {
-                    slog_panic!(
-                        self.logger,
-                        "fails to create checkpoint";
-                        "path" => %derived_path.display(),
-                        "error" => ?e
-                    )
-                });
-        }
+        let paths: Vec<_> = split_temp_paths
+            .iter()
+            .map(|p| p.as_path().to_str().unwrap())
+            .collect();
+        let _ = self
+            .tablet_registry()
+            .tablet_factory()
+            .freeze_and_clone(&tablet, &paths)
+            .unwrap();
+
         let elapsed = now.saturating_elapsed();
         // to be removed after when it's stable
         info!(

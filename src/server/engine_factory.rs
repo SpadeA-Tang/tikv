@@ -222,6 +222,26 @@ impl TabletFactory<RocksEngine> for KvEngineFactory {
         kv_engine
     }
 
+    fn freeze_and_clone(
+        &self,
+        tablet: &RocksEngine,
+        output_dirs: &[&str],
+    ) -> Result<Vec<RocksEngine>> {
+        let mut db_options = vec![];
+        for dir in output_dirs {
+            let opt = self.db_opts(EngineType::RaftKv2);
+            opt.set_info_log(TabletLogger::new(dir.to_string()));
+            db_options.push(opt.into_raw());
+        }
+
+        let dbs = tablet
+            .as_inner()
+            .freeze_and_clone(db_options, output_dirs)
+            .unwrap();
+
+        Ok(dbs.into_iter().map(|db| RocksEngine::new(db)).collect())
+    }
+
     fn destroy_tablet(&self, ctx: TabletContext, path: &Path) -> Result<()> {
         info!("destroy tablet"; "path" => %path.display(), "region_id" => ctx.id, "suffix" => ?ctx.suffix);
         // Create kv engine.

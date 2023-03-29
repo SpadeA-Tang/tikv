@@ -143,6 +143,10 @@ pub trait TabletFactory<EK>: Send + Sync {
     /// Open the tablet in `path`.
     fn open_tablet(&self, ctx: TabletContext, path: &Path) -> Result<EK>;
 
+    fn freeze_and_clone(&self, _tablet: &EK, _output_dirs: &[&str]) -> Result<Vec<EK>> {
+        unimplemented!()
+    }
+
     /// Destroy the tablet and its data
     fn destroy_tablet(&self, ctx: TabletContext, path: &Path) -> Result<()>;
 
