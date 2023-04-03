@@ -1,6 +1,7 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::{
+    backtrace::Backtrace,
     fmt::{self, Debug, Formatter},
     path::{Path, PathBuf},
     sync::{
@@ -294,6 +295,7 @@ impl<EK> TabletRegistry<EK> {
         let id = ctx.id;
         let path = self.tablet_path(id, ctx.suffix.unwrap());
         if !create && !self.tablets.factory.exists(&path) {
+            println!("Cannot found tablet, backtrace:\n{}", Backtrace::capture());
             return Err(Error::Other(box_err!(
                 "tablet ({}, {:?}) doesn't exist",
                 id,
