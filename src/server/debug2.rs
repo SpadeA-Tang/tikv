@@ -6,7 +6,12 @@ use engine_traits::{
     CF_LOCK, CF_WRITE,
 };
 use keys::{data_key, DATA_PREFIX_KEY};
-use kvproto::{debugpb::Db as DbType, kvrpcpb::MvccInfo, metapb, raft_serverpb::RegionLocalState};
+use kvproto::{
+    debugpb::Db as DbType,
+    kvrpcpb::MvccInfo,
+    metapb,
+    raft_serverpb::{PeerState, RegionLocalState},
+};
 use nom::AsBytes;
 use raft::prelude::Entry;
 
@@ -388,7 +393,7 @@ fn find_region_state_by_key<ER: RaftEngine>(
         .unwrap();
 
     for region_id in region_ids {
-        if let Ok(Some(region_state)) = raft_engine.get_region_state(region_id, u64::MAX) {
+        if let Ok(Some(region_state)) = raft_engine.get_region_state(region_id, u64::MAX) && region_state.get_state() == PeerState::Normal {
             let region = region_state.get_region();
             if region.get_start_key() <= key
                 && (key < region.get_end_key() || region.get_end_key().is_empty())
