@@ -298,22 +298,24 @@ impl<ER: RaftEngine> DebuggerV2<ER> {
             .unwrap();
 
         for (region_id, start_key, end_key, region_state) in compactions {
-            let mut tablet_cache =
-                get_tablet_cache(&self.tablet_reg, region_id, Some(region_state))?;
-            let talbet = tablet_cache.latest().unwrap();
-            info!("Debugger starts manual compact"; "talbet" => ?talbet, "cf" => cf);
-            let mut opts = CompactOptions::new();
-            opts.set_max_subcompactions(threads as i32);
-            opts.set_exclusive_manual_compaction(false);
-            opts.set_bottommost_level_compaction(bottommost.0);
-            let handle = box_try!(get_cf_handle(talbet.as_inner(), cf));
-            talbet.as_inner().compact_range_cf_opt(
-                handle,
-                &opts,
-                start_key.as_ref().map(|k| k.as_bytes()),
-                end_key.as_ref().map(|k| k.as_bytes()),
-            );
-            info!("Debugger finishes manual compact"; "db" => ?db, "cf" => cf);
+            if let Ok(mut tablet_cache) =
+                get_tablet_cache(&self.tablet_reg, region_id, Some(region_state))
+            {
+                let talbet = tablet_cache.latest().unwrap();
+                info!("Debugger starts manual compact"; "talbet" => ?talbet, "cf" => cf);
+                let mut opts = CompactOptions::new();
+                opts.set_max_subcompactions(threads as i32);
+                opts.set_exclusive_manual_compaction(false);
+                opts.set_bottommost_level_compaction(bottommost.0);
+                let handle = box_try!(get_cf_handle(talbet.as_inner(), cf));
+                talbet.as_inner().compact_range_cf_opt(
+                    handle,
+                    &opts,
+                    start_key.as_ref().map(|k| k.as_bytes()),
+                    end_key.as_ref().map(|k| k.as_bytes()),
+                );
+                info!("Debugger finishes manual compact"; "db" => ?db, "cf" => cf);
+            }
         }
 
         Ok(())
