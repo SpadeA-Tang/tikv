@@ -1408,6 +1408,12 @@ impl SnapManager {
     }
 
     pub fn init(&self) -> io::Result<()> {
+        self.init_core()?;
+        self.tablet_snap_manager.init()?;
+        Ok(())
+    }
+
+    fn init_core(&self) -> io::Result<()> {
         let enc_enabled = self.core.encryption_key_manager.is_some();
         info!(
             "Initializing SnapManager, encryption is enabled: {}",
@@ -1438,7 +1444,6 @@ impl SnapManager {
             }
         }
 
-        self.tablet_snap_manager.init()?;
         Ok(())
     }
 
