@@ -25,7 +25,7 @@
 //!   created by the store, and here init it using the data sent from the parent
 //!   peer.
 
-use std::{any::Any, borrow::Cow, cmp, path::PathBuf};
+use std::{any::Any, borrow::Cow, cmp, path::PathBuf, time::Duration};
 
 use collections::HashSet;
 use crossbeam::channel::SendError;
@@ -521,6 +521,7 @@ impl<EK: KvEngine, R: ApplyResReporter> Apply<EK, R> {
                     )
                 });
         }
+        std::thread::sleep(Duration::from_secs(1));
         let elapsed = now.saturating_elapsed();
         // to be removed after when it's stable
         info!(
