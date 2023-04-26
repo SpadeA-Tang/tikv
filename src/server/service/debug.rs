@@ -20,10 +20,10 @@ use tokio::runtime::Handle;
 
 use crate::{
     config::ConfigController,
-    server::debug::{Debugger, Error, Result},
+    server::debug::{Debugger, DebuggerImpl, Error, Result},
 };
 
-fn error_to_status(e: Error) -> RpcStatus {
+pub(crate) fn error_to_status(e: Error) -> RpcStatus {
     let (code, msg) = match e {
         Error::NotFound(msg) => (RpcStatusCode::NOT_FOUND, msg),
         Error::InvalidArgument(msg) => (RpcStatusCode::INVALID_ARGUMENT, msg),
@@ -32,11 +32,11 @@ fn error_to_status(e: Error) -> RpcStatus {
     RpcStatus::with_message(code, msg)
 }
 
-fn on_grpc_error(tag: &'static str, e: &GrpcError) {
+pub(crate) fn on_grpc_error(tag: &'static str, e: &GrpcError) {
     error!("{} failed: {:?}", tag, e);
 }
 
-fn error_to_grpc_error(tag: &'static str, e: Error) -> GrpcError {
+pub(crate) fn error_to_grpc_error(tag: &'static str, e: Error) -> GrpcError {
     let status = error_to_status(e);
     let e = GrpcError::RpcFailure(status);
     on_grpc_error(tag, &e);
@@ -47,7 +47,7 @@ fn error_to_grpc_error(tag: &'static str, e: Error) -> GrpcError {
 #[derive(Clone)]
 pub struct Service<ER: RaftEngine, T: RaftExtension> {
     pool: Handle,
-    debugger: Debugger<ER>,
+    debugger: DebuggerImpl<ER>,
     raft_router: T,
 }
 
@@ -62,7 +62,7 @@ impl<ER: RaftEngine, T: RaftExtension> Service<ER, T> {
         raft_router: T,
         cfg_controller: ConfigController,
     ) -> Self {
-        let mut debugger = Debugger::new(engines, cfg_controller);
+        let mut debugger = DebuggerImpl::new(engines, cfg_controller);
         debugger.set_kv_statistics(kv_statistics);
         debugger.set_raft_statistics(raft_statistics);
         Service {
