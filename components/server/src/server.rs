@@ -85,6 +85,7 @@ use tikv::{
     },
     server::{
         config::{Config as ServerConfig, ServerConfigManager},
+        debug::{Debugger, DebuggerImpl},
         gc_worker::{AutoGcConfig, GcWorker},
         lock_manager::LockManager,
         raftkv::ReplicaReadLockChecker,
@@ -202,7 +203,8 @@ struct TikvServer<ER: RaftEngine> {
     router: RaftRouter<RocksEngine, ER>,
     system: Option<RaftBatchSystem<RocksEngine, ER>>,
     resolver: Option<resolve::PdStoreAddrResolver>,
-    snap_mgr: Option<SnapManager>, // Will be filled in `init_servers`.
+    snap_mgr: Option<SnapManager>,
+    // Will be filled in `init_servers`.
     engines: Option<TikvEngines<RocksEngine, ER>>,
     kv_statistics: Option<Arc<RocksStatistics>>,
     raft_statistics: Option<Arc<RocksStatistics>>,
@@ -215,7 +217,8 @@ struct TikvServer<ER: RaftEngine> {
     sst_worker: Option<Box<LazyWorker<String>>>,
     quota_limiter: Arc<QuotaLimiter>,
     resource_manager: Option<Arc<ResourceGroupManager>>,
-    causal_ts_provider: Option<Arc<CausalTsProviderImpl>>, // used for rawkv apiv2
+    causal_ts_provider: Option<Arc<CausalTsProviderImpl>>,
+    // used for rawkv apiv2
     tablet_registry: Option<TabletRegistry<RocksEngine>>,
     br_snap_recovery_mode: bool, // use for br snapshot recovery
 }
@@ -1030,14 +1033,18 @@ where
             .unwrap()
             .register(tikv::config::Module::Import, Box::new(import_cfg_mgr));
 
+        let mut debugger = DebuggerImpl::new(
+            engines.engines.clone(),
+            self.cfg_controller.as_ref().unwrap().clone(),
+        );
+        debugger.set_kv_statistics(self.kv_statistics.clone());
+        debugger.set_raft_statistics(self.raft_statistics.clone());
+
         // Debug service.
         let debug_service = DebugService::new(
-            engines.engines.clone(),
-            self.kv_statistics.clone(),
-            self.raft_statistics.clone(),
+            debugger,
             servers.server.get_debug_thread_pool().clone(),
             engines.engine.raft_extension(),
-            self.cfg_controller.as_ref().unwrap().clone(),
         );
         if servers
             .server

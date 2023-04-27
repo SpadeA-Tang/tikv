@@ -1124,7 +1124,7 @@ impl<ER: RaftEngine> DebugExecutor for DebuggerImpl<ER> {
     }
 
     fn reset_to_version(&self, version: u64) {
-        DebuggerImpl::reset_to_version(self, version);
+        Debugger::reset_to_version(self, version);
     }
 }
 

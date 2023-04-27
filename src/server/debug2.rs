@@ -10,7 +10,7 @@ use kvproto::{
     debugpb::Db as DbType,
     kvrpcpb::MvccInfo,
     metapb,
-    raft_serverpb::{PeerState, RegionLocalState},
+    raft_serverpb::{PeerState, RegionLocalState, StoreIdent},
 };
 use nom::AsBytes;
 use raft::prelude::Entry;
@@ -285,7 +285,7 @@ impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
         start: &[u8],
         end: &[u8],
         limit: u64,
-    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>>> {
+    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>> + Send> {
         if end.is_empty() && limit == 0 {
             return Err(Error::InvalidArgument("no limit and to_key".to_owned()));
         }
@@ -401,6 +401,38 @@ impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
             })
             .unwrap();
         Ok(region_ids)
+    }
+
+    fn dump_kv_stats(&self) -> Result<String> {
+        unimplemented!()
+    }
+
+    fn dump_raft_stats(&self) -> Result<String> {
+        unimplemented!()
+    }
+
+    fn modify_tikv_config(&self, _config_name: &str, _config_value: &str) -> Result<()> {
+        unimplemented!()
+    }
+
+    fn get_store_ident(&self) -> Result<StoreIdent> {
+        unimplemented!()
+    }
+
+    fn get_region_properties(&self, _region_id: u64) -> Result<Vec<(String, String)>> {
+        unimplemented!()
+    }
+
+    fn reset_to_version(&self, _version: u64) {
+        unimplemented!()
+    }
+
+    fn set_kv_statistics(&mut self, _s: Option<std::sync::Arc<engine_rocks::RocksStatistics>>) {
+        unimplemented!()
+    }
+
+    fn set_raft_statistics(&mut self, _s: Option<std::sync::Arc<engine_rocks::RocksStatistics>>) {
+        unimplemented!()
     }
 }
 

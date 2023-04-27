@@ -20,7 +20,7 @@ use grpcio::{ChannelBuilder, EnvBuilder, Environment, Error as GrpcError, Servic
 use grpcio_health::HealthService;
 use kvproto::{
     deadlock_grpc::create_deadlock,
-    debugpb_grpc::DebugClient,
+    debugpb_grpc::{create_debug, DebugClient},
     diagnosticspb_grpc::create_diagnostics,
     import_sstpb_grpc::create_import_sst,
     kvrpcpb::{ApiVersion, Context},
@@ -48,14 +48,20 @@ use tempfile::TempDir;
 use test_pd_client::TestPdClient;
 use test_raftstore::{filter_send, AddressMap, Config, Filter};
 use tikv::{
+    config::ConfigController,
     coprocessor, coprocessor_v2,
     import::{ImportSstService, SstImporter},
     read_pool::ReadPool,
     server::{
-        gc_worker::GcWorker, load_statistics::ThreadLoadPool, lock_manager::LockManager,
-        raftkv::ReplicaReadLockChecker, resolve, service::DiagnosticsService, ConnectionBuilder,
-        Error, Extension, NodeV2, PdStoreAddrResolver, RaftClient, RaftKv2, Result as ServerResult,
-        Server, ServerTransport,
+        debug2::DebuggerImplV2,
+        gc_worker::GcWorker,
+        load_statistics::ThreadLoadPool,
+        lock_manager::LockManager,
+        raftkv::ReplicaReadLockChecker,
+        resolve,
+        service::{DebugService, DiagnosticsService},
+        ConnectionBuilder, Error, Extension, NodeV2, PdStoreAddrResolver, RaftClient, RaftKv2,
+        Result as ServerResult, Server, ServerTransport,
     },
     storage::{
         self,
@@ -863,6 +869,27 @@ impl<EK: KvEngine> Cluster<ServerCluster<EK>, EK> {
 
     pub fn get_security_mgr(&self) -> Arc<SecurityManager> {
         self.sim.rl().security_mgr.clone()
+    }
+}
+
+impl Cluster<ServerCluster<RocksEngine>, RocksEngine> {
+    pub fn register_debug_service(&mut self, node_id: u64) {
+        let raft_extension = self
+            .sim
+            .rl()
+            .storages
+            .get(&node_id)
+            .unwrap()
+            .raft_extension();
+        let mut sim = self.sim.wl();
+        let meta = sim.metas.get_mut(&node_id).unwrap();
+        let tablet_registry = self.tablet_registries.get(&node_id).unwrap().clone();
+        let raft_engine = self.raft_engines.get(&node_id).unwrap().clone();
+        let debug_thread_handle = meta.server.get_debug_thread_pool().clone();
+        let debugger =
+            DebuggerImplV2::new(tablet_registry, raft_engine, ConfigController::default());
+        let debug_service = DebugService::new(debugger, debug_thread_handle, raft_extension);
+        meta.server.register_service(create_debug(debug_service));
     }
 }
 

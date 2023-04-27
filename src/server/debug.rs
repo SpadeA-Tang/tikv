@@ -141,7 +141,7 @@ pub trait Debugger {
         start: &[u8],
         end: &[u8],
         limit: u64,
-    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>>>;
+    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>> + Send>;
 
     /// Compact the cf[start..end) in the db.
     fn compact(
@@ -156,6 +156,22 @@ pub trait Debugger {
 
     /// Get all regions holding region meta data from raft CF in KV storage.
     fn get_all_regions_in_store(&self) -> Result<Vec<u64>>;
+
+    fn get_store_ident(&self) -> Result<StoreIdent>;
+
+    fn dump_kv_stats(&self) -> Result<String>;
+
+    fn dump_raft_stats(&self) -> Result<String>;
+
+    fn modify_tikv_config(&self, config_name: &str, config_value: &str) -> Result<()>;
+
+    fn get_region_properties(&self, region_id: u64) -> Result<Vec<(String, String)>>;
+
+    fn reset_to_version(&self, version: u64);
+
+    fn set_kv_statistics(&mut self, s: Option<Arc<RocksStatistics>>);
+
+    fn set_raft_statistics(&mut self, s: Option<Arc<RocksStatistics>>);
 }
 
 #[derive(Clone)]
@@ -202,32 +218,8 @@ impl<ER: RaftEngine> DebuggerImpl<ER> {
         }
     }
 
-    pub fn set_kv_statistics(&mut self, s: Option<Arc<RocksStatistics>>) {
-        self.kv_statistics = s;
-    }
-
-    pub fn set_raft_statistics(&mut self, s: Option<Arc<RocksStatistics>>) {
-        self.raft_statistics = s;
-    }
-
     pub fn get_engine(&self) -> &Engines<RocksEngine, ER> {
         &self.engines
-    }
-
-    pub fn dump_kv_stats(&self) -> Result<String> {
-        let mut kv_str = box_try!(MiscExt::dump_stats(&self.engines.kv));
-        if let Some(s) = self.kv_statistics.as_ref() && let Some(s) = s.to_string() {
-            kv_str.push_str(&s);
-        }
-        Ok(kv_str)
-    }
-
-    pub fn dump_raft_stats(&self) -> Result<String> {
-        let mut raft_str = box_try!(RaftEngine::dump_stats(&self.engines.raft));
-        if let Some(s) = self.raft_statistics.as_ref() && let Some(s) = s.to_string() {
-            raft_str.push_str(&s);
-        }
-        Ok(raft_str)
     }
 
     /// Scan raw keys for given range `[start, end)` in given cf.
@@ -740,25 +732,6 @@ impl<ER: RaftEngine> DebuggerImpl<ER> {
         Ok(())
     }
 
-    pub fn get_store_ident(&self) -> Result<StoreIdent> {
-        let db = &self.engines.kv;
-        db.get_msg::<StoreIdent>(keys::STORE_IDENT_KEY)
-            .map_err(|e| box_err!(e))
-            .and_then(|ident| match ident {
-                Some(ident) => Ok(ident),
-                None => Err(Error::NotFound("No store ident key".to_owned())),
-            })
-    }
-
-    pub fn modify_tikv_config(&self, config_name: &str, config_value: &str) -> Result<()> {
-        if let Err(e) = self.cfg_controller.update_config(config_name, config_value) {
-            return Err(Error::Other(
-                format!("failed to update config, err: {:?}", e).into(),
-            ));
-        }
-        Ok(())
-    }
-
     fn get_region_state(&self, region_id: u64) -> Result<RegionLocalState> {
         let region_state_key = keys::region_state_key(region_id);
         let region_state = box_try!(
@@ -770,34 +743,6 @@ impl<ER: RaftEngine> DebuggerImpl<ER> {
             Some(v) => Ok(v),
             None => Err(Error::NotFound(format!("region {}", region_id))),
         }
-    }
-
-    pub fn get_region_properties(&self, region_id: u64) -> Result<Vec<(String, String)>> {
-        let region_state = self.get_region_state(region_id)?;
-        let region = region_state.get_region();
-        let start = keys::enc_start_key(region);
-        let end = keys::enc_end_key(region);
-
-        let mut res = dump_write_cf_properties(&self.engines.kv, &start, &end)?;
-        let mut res1 = dump_default_cf_properties(&self.engines.kv, &start, &end)?;
-        res.append(&mut res1);
-
-        let middle_key = match box_try!(get_region_approximate_middle(&self.engines.kv, region)) {
-            Some(data_key) => keys::origin_key(&data_key).to_vec(),
-            None => Vec::new(),
-        };
-
-        res.push((
-            "region.start_key".to_owned(),
-            hex::encode(&region.start_key),
-        ));
-        res.push(("region.end_key".to_owned(), hex::encode(&region.end_key)));
-        res.push((
-            "region.middle_key_by_approximate_size".to_owned(),
-            hex::encode(middle_key),
-        ));
-
-        Ok(res)
     }
 
     pub fn get_range_properties(&self, start: &[u8], end: &[u8]) -> Result<Vec<(String, String)>> {
@@ -813,10 +758,6 @@ impl<ER: RaftEngine> DebuggerImpl<ER> {
         )?;
         props.append(&mut props1);
         Ok(props)
-    }
-
-    pub fn reset_to_version(&self, version: u64) {
-        self.reset_to_version_manager.start(version.into());
     }
 }
 
@@ -907,7 +848,7 @@ impl<ER: RaftEngine> Debugger for DebuggerImpl<ER> {
         start: &[u8],
         end: &[u8],
         limit: u64,
-    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>>> {
+    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>> + Send> {
         if end.is_empty() && limit == 0 {
             return Err(Error::InvalidArgument("no limit and to_key".to_owned()));
         }
@@ -965,6 +906,81 @@ impl<ER: RaftEngine> Debugger for DebuggerImpl<ER> {
         }));
         regions.sort_unstable();
         Ok(regions)
+    }
+
+    fn get_store_ident(&self) -> Result<StoreIdent> {
+        let db = &self.engines.kv;
+        db.get_msg::<StoreIdent>(keys::STORE_IDENT_KEY)
+            .map_err(|e| box_err!(e))
+            .and_then(|ident| match ident {
+                Some(ident) => Ok(ident),
+                None => Err(Error::NotFound("No store ident key".to_owned())),
+            })
+    }
+
+    fn dump_kv_stats(&self) -> Result<String> {
+        let mut kv_str = box_try!(MiscExt::dump_stats(&self.engines.kv));
+        if let Some(s) = self.kv_statistics.as_ref() && let Some(s) = s.to_string() {
+            kv_str.push_str(&s);
+        }
+        Ok(kv_str)
+    }
+
+    fn dump_raft_stats(&self) -> Result<String> {
+        let mut raft_str = box_try!(RaftEngine::dump_stats(&self.engines.raft));
+        if let Some(s) = self.raft_statistics.as_ref() && let Some(s) = s.to_string() {
+            raft_str.push_str(&s);
+        }
+        Ok(raft_str)
+    }
+
+    fn modify_tikv_config(&self, config_name: &str, config_value: &str) -> Result<()> {
+        if let Err(e) = self.cfg_controller.update_config(config_name, config_value) {
+            return Err(Error::Other(
+                format!("failed to update config, err: {:?}", e).into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn get_region_properties(&self, region_id: u64) -> Result<Vec<(String, String)>> {
+        let region_state = self.get_region_state(region_id)?;
+        let region = region_state.get_region();
+        let start = keys::enc_start_key(region);
+        let end = keys::enc_end_key(region);
+
+        let mut res = dump_write_cf_properties(&self.engines.kv, &start, &end)?;
+        let mut res1 = dump_default_cf_properties(&self.engines.kv, &start, &end)?;
+        res.append(&mut res1);
+
+        let middle_key = match box_try!(get_region_approximate_middle(&self.engines.kv, region)) {
+            Some(data_key) => keys::origin_key(&data_key).to_vec(),
+            None => Vec::new(),
+        };
+
+        res.push((
+            "region.start_key".to_owned(),
+            hex::encode(&region.start_key),
+        ));
+        res.push(("region.end_key".to_owned(), hex::encode(&region.end_key)));
+        res.push((
+            "region.middle_key_by_approximate_size".to_owned(),
+            hex::encode(middle_key),
+        ));
+
+        Ok(res)
+    }
+
+    fn reset_to_version(&self, version: u64) {
+        self.reset_to_version_manager.start(version.into());
+    }
+
+    fn set_kv_statistics(&mut self, s: Option<Arc<RocksStatistics>>) {
+        self.kv_statistics = s;
+    }
+
+    fn set_raft_statistics(&mut self, s: Option<Arc<RocksStatistics>>) {
+        self.raft_statistics = s;
     }
 }
 
