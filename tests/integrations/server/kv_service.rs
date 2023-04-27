@@ -940,9 +940,10 @@ fn test_split_region_impl<F: KvFormat>(is_raw_kv: bool) {
     );
 }
 
-#[test]
+#[test_case(test_raftstore_v2::must_new_cluster_and_debug_client)]
+#[test_case(test_raftstore::must_new_cluster_and_debug_client)]
 fn test_debug_get() {
-    let (cluster, debug_client, store_id) = must_new_cluster_and_debug_client();
+    let (cluster, debug_client, store_id) = new_cluster();
     let (k, v) = (b"key", b"value");
 
     // Put some data.
@@ -968,9 +969,10 @@ fn test_debug_get() {
     }
 }
 
-#[test]
+#[test_case(test_raftstore::must_new_cluster_and_debug_client)]
+#[test_case(test_raftstore_v2::must_new_cluster_and_debug_client)]
 fn test_debug_raft_log() {
-    let (cluster, debug_client, store_id) = must_new_cluster_and_debug_client();
+    let (cluster, debug_client, store_id) = new_cluster();
 
     // Put some data.
     let engine = cluster.get_raft_engine(store_id);
@@ -1006,9 +1008,10 @@ fn test_debug_raft_log() {
     }
 }
 
-#[test]
+#[test_case(test_raftstore::must_new_cluster_and_debug_client)]
+#[test_case(test_raftstore_v2::must_new_cluster_and_debug_client)]
 fn test_debug_region_info() {
-    let (cluster, debug_client, store_id) = must_new_cluster_and_debug_client();
+    let (cluster, debug_client, store_id) = new_cluster();
 
     let raft_engine = cluster.get_raft_engine(store_id);
     let kv_engine = cluster.get_engine(store_id);
@@ -1069,7 +1072,8 @@ fn test_debug_region_info() {
     }
 }
 
-#[test]
+#[test_case(test_raftstore::must_new_cluster_and_debug_client)]
+#[test_case(test_raftstore_v2::must_new_cluster_and_debug_client)]
 fn test_debug_region_size() {
     let (cluster, debug_client, store_id) = must_new_cluster_and_debug_client();
     let engine = cluster.get_engine(store_id);
@@ -1154,7 +1158,8 @@ fn test_debug_fail_point() {
     );
 }
 
-#[test]
+#[test_case(test_raftstore::must_new_cluster_and_debug_client)]
+#[test_case(test_raftstore_v2::must_new_cluster_and_debug_client)]
 fn test_debug_scan_mvcc() {
     let (cluster, debug_client, store_id) = must_new_cluster_and_debug_client();
     let engine = cluster.get_engine(store_id);

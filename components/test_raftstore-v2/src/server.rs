@@ -79,7 +79,7 @@ use tikv_util::{
     worker::{Builder as WorkerBuilder, LazyWorker},
     Either, HandyRwLock,
 };
-use tokio::runtime::Builder as TokioBuilder;
+use tokio::runtime::{Builder as TokioBuilder, Handle};
 use txn_types::TxnExtraScheduler;
 
 use crate::{Cluster, RaftStoreRouter, SimulateTransport, Simulator, SnapshotRouter};
@@ -256,6 +256,7 @@ pub struct ServerMeta<EK: KvEngine> {
 }
 
 type PendingServices = Vec<Box<dyn Fn() -> Service>>;
+type PendingDebugService<EK> = Box<dyn Fn(&ServerCluster<EK>, Handle) -> Service>;
 
 pub struct ServerCluster<EK: KvEngine> {
     metas: HashMap<u64, ServerMeta<EK>>,
@@ -270,6 +271,7 @@ pub struct ServerCluster<EK: KvEngine> {
     concurrency_managers: HashMap<u64, ConcurrencyManager>,
     env: Arc<Environment>,
     pub pending_services: HashMap<u64, PendingServices>,
+    pub pending_debug_service: Option<PendingDebugService<EK>>,
     pub health_services: HashMap<u64, HealthService>,
     pub security_mgr: Arc<SecurityManager>,
     pub txn_extra_schedulers: HashMap<u64, Arc<dyn TxnExtraScheduler>>,
@@ -308,6 +310,7 @@ impl<EK: KvEngine> ServerCluster<EK> {
             snap_mgrs: HashMap::default(),
             snap_paths: HashMap::default(),
             pending_services: HashMap::default(),
+            pending_debug_service: None::<PendingDebugService<EK>>,
             health_services: HashMap::default(),
             raft_clients: HashMap::default(),
             conn_builder,
@@ -538,7 +541,7 @@ impl<EK: KvEngine> ServerCluster<EK> {
         );
         let debug_thread_handle = debug_thread_pool.handle().clone();
         let diag_service = DiagnosticsService::new(
-            debug_thread_handle,
+            debug_thread_handle.clone(),
             cfg.log.file.filename.clone(),
             cfg.slow_log_file.clone(),
         );
@@ -571,6 +574,9 @@ impl<EK: KvEngine> ServerCluster<EK> {
                 for fact in svcs {
                     svr.register_service(fact());
                 }
+            }
+            if let Some(debug_service) = &self.pending_debug_service {
+                svr.register_service(debug_service(self, debug_thread_handle.clone()));
             }
             match svr.build_and_bind() {
                 Ok(_) => {
@@ -872,27 +878,6 @@ impl<EK: KvEngine> Cluster<ServerCluster<EK>, EK> {
     }
 }
 
-impl Cluster<ServerCluster<RocksEngine>, RocksEngine> {
-    pub fn register_debug_service(&mut self, node_id: u64) {
-        let raft_extension = self
-            .sim
-            .rl()
-            .storages
-            .get(&node_id)
-            .unwrap()
-            .raft_extension();
-        let mut sim = self.sim.wl();
-        let meta = sim.metas.get_mut(&node_id).unwrap();
-        let tablet_registry = self.tablet_registries.get(&node_id).unwrap().clone();
-        let raft_engine = self.raft_engines.get(&node_id).unwrap().clone();
-        let debug_thread_handle = meta.server.get_debug_thread_pool().clone();
-        let debugger =
-            DebuggerImplV2::new(tablet_registry, raft_engine, ConfigController::default());
-        let debug_service = DebugService::new(debugger, debug_thread_handle, raft_extension);
-        meta.server.register_service(create_debug(debug_service));
-    }
-}
-
 pub fn new_server_cluster(
     id: u64,
     count: usize,
@@ -1030,7 +1015,30 @@ pub fn must_new_cluster_and_debug_client() -> (
     DebugClient,
     u64,
 ) {
-    let (cluster, leader, _) = must_new_cluster_mul(1);
+    let mut cluster = new_server_cluster(0, 1);
+    cluster.create_engines();
+    let region_id = cluster.bootstrap_conf_change();
+
+    {
+        let mut sim = cluster.sim.wl();
+        let tablet_registry = cluster.tablet_registries.get(&1).unwrap().clone();
+        let raft_engine = cluster.raft_engines.get(&1).unwrap().clone();
+        let debugger =
+            DebuggerImplV2::new(tablet_registry, raft_engine, ConfigController::default());
+
+        sim.pending_debug_service = Some(Box::new(move |cluster, debug_thread_handle| {
+            let raft_extension = cluster.storages.get(&1).unwrap().raft_extension();
+
+            create_debug(DebugService::new(
+                debugger.clone(),
+                debug_thread_handle,
+                raft_extension,
+            ))
+        }));
+    }
+
+    cluster.start().unwrap();
+    let leader = cluster.leader_of_region(region_id).unwrap();
 
     let env = Arc::new(Environment::new(1));
     let channel =

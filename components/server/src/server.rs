@@ -203,8 +203,7 @@ struct TikvServer<ER: RaftEngine> {
     router: RaftRouter<RocksEngine, ER>,
     system: Option<RaftBatchSystem<RocksEngine, ER>>,
     resolver: Option<resolve::PdStoreAddrResolver>,
-    snap_mgr: Option<SnapManager>,
-    // Will be filled in `init_servers`.
+    snap_mgr: Option<SnapManager>, // Will be filled in `init_servers`.
     engines: Option<TikvEngines<RocksEngine, ER>>,
     kv_statistics: Option<Arc<RocksStatistics>>,
     raft_statistics: Option<Arc<RocksStatistics>>,
