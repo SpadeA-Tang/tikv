@@ -252,6 +252,12 @@ impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
     fn region_size<T: AsRef<str>>(&self, region_id: u64, cfs: Vec<T>) -> Result<Vec<(T, usize)>> {
         match self.raft_engine.get_region_state(region_id, u64::MAX) {
             Ok(Some(region_state)) => {
+                if region_state.get_state() != PeerState::Normal {
+                    return Err(Error::NotFound(format!(
+                        "region {:?} has been deleted",
+                        region_id
+                    )));
+                }
                 let region = region_state.get_region();
                 let start_key = &keys::data_key(region.get_start_key());
                 let end_key = &keys::data_end_key(region.get_end_key());
@@ -755,6 +761,12 @@ mod tests {
             cfs.iter().find(|&&c| c == cf).unwrap();
             assert_eq!(size, k.len() + v.len());
         }
+
+        state.set_state(PeerState::Tombstone);
+        let mut wb = raft_engine.log_batch(10);
+        wb.put_region_state(region_id, 10, &state).unwrap();
+        raft_engine.consume(&mut wb, true).unwrap();
+        debugger.region_size(region_id, cfs.clone()).unwrap_err();
     }
 
     // For simplicity, the format of the key is inline with data in
