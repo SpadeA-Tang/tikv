@@ -1543,7 +1543,7 @@ impl MvccChecker {
     }
 }
 
-fn region_overlap(r1: &Region, r2: &Region) -> bool {
+pub fn region_overlap(r1: &Region, r2: &Region) -> bool {
     let (start_key_1, start_key_2) = (r1.get_start_key(), r2.get_start_key());
     let (end_key_1, end_key_2) = (r1.get_end_key(), r2.get_end_key());
     (start_key_1 < end_key_2 || end_key_2.is_empty())

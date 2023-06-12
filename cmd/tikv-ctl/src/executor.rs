@@ -1114,42 +1114,9 @@ where
     }
 
     fn recreate_region(&self, mgr: Arc<SecurityManager>, pd_cfg: &PdConfig, region_id: u64) {
-        let rpc_client = RpcClient::new(pd_cfg, None, mgr)
-            .unwrap_or_else(|e| perror_and_exit("RpcClient::new", e));
-
-        let mut region = match block_on(rpc_client.get_region_by_id(region_id)) {
-            Ok(Some(region)) => region,
-            Ok(None) => {
-                println!("no such region {} on PD", region_id);
-                tikv_util::logger::exit_process_gracefully(-1);
-            }
-            Err(e) => perror_and_exit("RpcClient::get_region_by_id", e),
-        };
-
-        let new_region_id = rpc_client
-            .alloc_id()
-            .unwrap_or_else(|e| perror_and_exit("RpcClient::alloc_id", e));
-        let new_peer_id = rpc_client
-            .alloc_id()
-            .unwrap_or_else(|e| perror_and_exit("RpcClient::alloc_id", e));
-
         let store_id = self.get_store_ident().expect("get store id").store_id;
+        let region = recreate_region(mgr, pd_cfg, region_id, store_id);
 
-        region.set_id(new_region_id);
-        let old_version = region.get_region_epoch().get_version();
-        region.mut_region_epoch().set_version(old_version + 1);
-        region.mut_region_epoch().set_conf_ver(INIT_EPOCH_CONF_VER);
-
-        region.peers.clear();
-        let mut peer = Peer::default();
-        peer.set_id(new_peer_id);
-        peer.set_store_id(store_id);
-        region.mut_peers().push(peer);
-
-        println!(
-            "initing empty region {} with peer_id {}...",
-            new_region_id, new_peer_id
-        );
         self.recreate_region(region)
             .unwrap_or_else(|e| perror_and_exit("Debugger::recreate_region", e));
         println!("success");
@@ -1358,8 +1325,13 @@ impl<ER: RaftEngine> DebugExecutor for DebuggerImplV2<ER> {
 
     fn drop_unapplied_raftlog(&self, _region_ids: Option<Vec<u64>>) {}
 
-    fn recreate_region(&self, _mgr: Arc<SecurityManager>, _pd_cfg: &PdConfig, _region_id: u64) {
-        unimplemented!()
+    fn recreate_region(&self, mgr: Arc<SecurityManager>, pd_cfg: &PdConfig, region_id: u64) {
+        let store_id = self.get_store_ident().expect("get store id").store_id;
+        let region = recreate_region(mgr, pd_cfg, region_id, store_id);
+
+        self.recreate_region(region)
+            .unwrap_or_else(|e| perror_and_exit("Debugger::recreate_region", e));
+        println!("success");
     }
 
     fn dump_metrics(&self, _tags: Vec<&str>) {
@@ -1424,4 +1396,48 @@ impl<ER: RaftEngine> DebugExecutor for DebuggerImplV2<ER> {
     ) -> Result<(), KeyRange> {
         unimplemented!("only available for remote mode");
     }
+}
+
+fn recreate_region(
+    mgr: Arc<SecurityManager>,
+    pd_cfg: &PdConfig,
+    region_id: u64,
+    store_id: u64,
+) -> Region {
+    let rpc_client =
+        RpcClient::new(pd_cfg, None, mgr).unwrap_or_else(|e| perror_and_exit("RpcClient::new", e));
+
+    let mut region = match block_on(rpc_client.get_region_by_id(region_id)) {
+        Ok(Some(region)) => region,
+        Ok(None) => {
+            println!("no such region {} on PD", region_id);
+            tikv_util::logger::exit_process_gracefully(-1);
+        }
+        Err(e) => perror_and_exit("RpcClient::get_region_by_id", e),
+    };
+
+    let new_region_id = rpc_client
+        .alloc_id()
+        .unwrap_or_else(|e| perror_and_exit("RpcClient::alloc_id", e));
+    let new_peer_id = rpc_client
+        .alloc_id()
+        .unwrap_or_else(|e| perror_and_exit("RpcClient::alloc_id", e));
+
+    region.set_id(new_region_id);
+    let old_version = region.get_region_epoch().get_version();
+    region.mut_region_epoch().set_version(old_version + 1);
+    region.mut_region_epoch().set_conf_ver(INIT_EPOCH_CONF_VER);
+
+    region.peers.clear();
+    let mut peer = Peer::default();
+    peer.set_id(new_peer_id);
+    peer.set_store_id(store_id);
+    region.mut_peers().push(peer);
+
+    println!(
+        "initing empty region {} with peer_id {}...",
+        new_region_id, new_peer_id
+    );
+
+    region
 }

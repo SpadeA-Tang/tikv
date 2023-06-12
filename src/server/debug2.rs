@@ -21,15 +21,17 @@ use nom::AsBytes;
 use raft::{prelude::Entry, RawNode};
 use raftstore::{
     coprocessor::{get_region_approximate_middle, get_region_approximate_size},
-    store::util::check_key_in_region,
+    store::{util::check_key_in_region, RAFT_INIT_LOG_INDEX},
 };
-use raftstore_v2::Storage;
+use raftstore_v2::{write_initial_states, Storage};
 use slog::o;
 use tikv_util::{
     config::ReadableSize, store::find_peer, sys::thread::StdThreadBuildWrapper, worker::Worker,
 };
 
-use super::debug::{recover_mvcc_for_range, BottommostLevelCompaction, Debugger, RegionInfo};
+use super::debug::{
+    recover_mvcc_for_range, region_overlap, BottommostLevelCompaction, Debugger, RegionInfo,
+};
 use crate::{
     config::ConfigController,
     server::debug::{dump_default_cf_properties, dump_write_cf_properties, Error, Result},
@@ -471,6 +473,55 @@ impl<ER: RaftEngine> DebuggerImplV2<ER> {
             box_try!(self.raft_engine.consume(&mut lb, true));
         }
         Ok(errors)
+    }
+
+    pub fn recreate_region(&self, region: metapb::Region) -> Result<()> {
+        let raft_engine = &self.raft_engine;
+
+        if region.get_start_key() >= region.get_end_key() && !region.get_end_key().is_empty() {
+            return Err(box_err!("Bad region: {:?}", region));
+        }
+
+        box_try!(
+            raft_engine.for_each_raft_group::<raftstore::Error, _>(&mut |region_id| {
+                if let Ok(Some(region_state)) = raft_engine.get_region_state(region_id, u64::MAX) {
+                    if region_id == region.get_id() {
+                        return Err(box_err!("Store already has region with id {}", region_id));
+                    }
+                    if region_state.get_state() == PeerState::Tombstone {
+                        return Ok(());
+                    }
+
+                    let exist_region = region_state.get_region();
+                    if !region_overlap(exist_region, &region) {
+                        return Ok(());
+                    }
+
+                    if exist_region.get_start_key() == region.get_start_key()
+                        && exist_region.get_end_key() == region.get_end_key()
+                    {
+                        return Err(box_err!("region still exists {:?}", region));
+                    } else {
+                        return Err(box_err!("region overlap with {:?}", exist_region));
+                    }
+                }
+
+                Ok(())
+            })
+        );
+
+        let registry = &self.tablet_reg;
+
+        // create tablet
+        let path = registry.tablet_path(region.get_id(), RAFT_INIT_LOG_INDEX);
+        let ctx = TabletContext::new(&region, Some(RAFT_INIT_LOG_INDEX));
+        registry.tablet_factory().open_tablet(ctx, &path).unwrap();
+
+        let mut lb = raft_engine.log_batch(10);
+        box_try!(write_initial_states(&mut lb, region));
+        box_try!(raft_engine.consume(&mut lb, true));
+
+        Ok(())
     }
 }
 
@@ -1897,5 +1948,68 @@ mod tests {
                 .unwrap(),
             expected_state
         );
+    }
+
+    #[test]
+    fn test_recreate_region() {
+        let dir = test_util::temp_dir("test-debugger", false);
+        let debugger = new_debugger(dir.path());
+        let raft_engine = &debugger.raft_engine;
+
+        let mut lb = raft_engine.log_batch(10);
+        let metadata = vec![("", "g"), ("g", "m"), ("m", "")];
+        for (region_id, (start, end)) in metadata.into_iter().enumerate() {
+            let region_id = region_id as u64;
+            let mut region = metapb::Region::default();
+            region.set_id(region_id);
+            region.set_start_key(start.to_owned().into_bytes());
+            region.set_end_key(end.to_owned().into_bytes());
+
+            let mut region_state = RegionLocalState::default();
+            region_state.set_state(PeerState::Normal);
+            region_state.set_region(region);
+            region_state.set_tablet_index(5);
+
+            lb.put_region_state(region_id, 5, &region_state).unwrap();
+        }
+        raft_engine.consume(&mut lb, true).unwrap();
+
+        let remove_region_state = |region_id: u64| {
+            let mut lb = raft_engine.log_batch(1);
+            let mut region_state = raft_engine
+                .get_region_state(region_id, u64::MAX)
+                .unwrap()
+                .unwrap();
+            region_state.set_state(PeerState::Tombstone);
+            lb.put_region_state(region_id, u64::MAX, &region_state)
+                .unwrap();
+            raft_engine.consume(&mut lb, true).unwrap();
+        };
+
+        let mut region = metapb::Region::default();
+        region.set_id(100);
+
+        region.set_start_key(b"k".to_vec());
+        region.set_end_key(b"z".to_vec());
+        debugger.recreate_region(region.clone()).unwrap_err();
+
+        remove_region_state(1);
+        remove_region_state(2);
+        debugger.recreate_region(region.clone()).unwrap();
+        assert_eq!(
+            raft_engine
+                .get_region_state(100, u64::MAX)
+                .unwrap()
+                .unwrap()
+                .get_region(),
+            &region
+        );
+
+        region.set_start_key(b"z".to_vec());
+        region.set_end_key(b"".to_vec());
+        debugger.recreate_region(region).unwrap_err();
+
+        let path = debugger.tablet_reg.tablet_path(100, RAFT_INIT_LOG_INDEX);
+        assert!(debugger.tablet_reg.tablet_factory().exists(&path));
     }
 }
