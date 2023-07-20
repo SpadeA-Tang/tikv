@@ -6,7 +6,7 @@ use engine_rocks::{
     raw::CompactOptions, util::get_cf_handle, RocksEngine, RocksEngineIterator, RocksStatistics,
 };
 use engine_traits::{
-    CachedTablet, Iterable, MiscExt, Peekable, RaftEngine, RaftLogBatch, TabletContext,
+    CachedTablet, Iterable, Iterator, MiscExt, Peekable, RaftEngine, RaftLogBatch, TabletContext,
     TabletRegistry, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE,
 };
 use futures::future::Future;
@@ -26,7 +26,8 @@ use raftstore::{
 use raftstore_v2::Storage;
 use slog::o;
 use tikv_util::{
-    config::ReadableSize, store::find_peer, sys::thread::StdThreadBuildWrapper, worker::Worker,
+    config::ReadableSize, keybuilder::KeyBuilder, store::find_peer,
+    sys::thread::StdThreadBuildWrapper, worker::Worker,
 };
 
 use super::debug::{recover_mvcc_for_range, BottommostLevelCompaction, Debugger, RegionInfo};
@@ -133,7 +134,7 @@ impl MvccInfoIteratorV2 {
     }
 }
 
-impl Iterator for MvccInfoIteratorV2 {
+impl std::iter::Iterator for MvccInfoIteratorV2 {
     type Item = raftstore::Result<(Vec<u8>, MvccInfo)>;
 
     fn next(&mut self) -> Option<raftstore::Result<(Vec<u8>, MvccInfo)>> {
@@ -536,6 +537,93 @@ impl<ER: RaftEngine> DebuggerImplV2<ER> {
 
         Ok(())
     }
+
+    /// Scan raw keys for given range `[start, end)` in given cf.
+    #[allow(clippy::collapsible_else_if)]
+    pub fn raw_scan(
+        &self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+        cf: &str,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let range_overlaps =
+            |region_range: (&[u8], &[u8]), request_range: (&[u8], &[u8])| -> bool {
+                (region_range.1.is_empty()
+                    || &request_range.0[DATA_PREFIX_KEY.len()..] < region_range.1)
+                    && (max_end_key(request_range.1)
+                        || region_range.0 < &request_range.1[DATA_PREFIX_KEY.len()..])
+            };
+
+        let start = if start.is_empty() {
+            DATA_PREFIX_KEY
+        } else {
+            start
+        };
+        let end = if end.is_empty() { DATA_PREFIX_KEY } else { end };
+
+        let mut region_states = get_all_region_states_with_normal_state(&self.raft_engine);
+        region_states.retain(|r| {
+            let region_start = r.get_region().get_start_key();
+            let region_end = r.get_region().get_end_key();
+            range_overlaps((region_start, region_end), (start, end))
+        });
+        region_states.sort_by(|r1, r2| {
+            r1.get_region()
+                .get_start_key()
+                .cmp(r2.get_region().get_start_key())
+        });
+
+        let mut res = Vec::with_capacity(limit);
+        for state in region_states {
+            if res.len() >= limit {
+                break;
+            }
+            let region = state.get_region().clone();
+            let mut tablet_cache =
+                get_tablet_cache(&self.tablet_reg, state.get_region().get_id(), Some(state))
+                    .unwrap();
+            let tablet = tablet_cache.latest().unwrap();
+
+            let iter_start = if start == DATA_PREFIX_KEY
+                || &start[DATA_PREFIX_KEY.len()..] <= region.get_start_key()
+            {
+                Some(KeyBuilder::from_vec(data_key(region.get_start_key()), 0, 0))
+            } else {
+                Some(KeyBuilder::from_vec(start.to_vec(), 0, 0))
+            };
+
+            let region_end = region.get_end_key();
+            let iter_end = if max_end_key(end)
+                || (!region_end.is_empty() && region_end < &end[DATA_PREFIX_KEY.len()..])
+            {
+                if !region_end.is_empty() {
+                    Some(KeyBuilder::from_vec(data_key(region_end), 0, 0))
+                } else {
+                    None
+                }
+            } else {
+                if max_end_key(end) {
+                    Some(KeyBuilder::from_vec(end.to_vec(), 0, 0))
+                } else {
+                    None
+                }
+            };
+
+            let iter_opt = engine_traits::IterOptions::new(iter_start, iter_end, false);
+            let mut iter = box_try!(tablet.iterator_opt(cf, iter_opt));
+            if !iter.seek_to_first().unwrap() {
+                continue;
+            }
+
+            res.push((iter.key().to_vec(), iter.value().to_vec()));
+            while res.len() < limit && iter.next().unwrap() {
+                res.push((iter.key().to_vec(), iter.value().to_vec()));
+            }
+        }
+
+        Ok(res)
+    }
 }
 
 fn set_region_tombstone<ER: RaftEngine>(
@@ -590,6 +678,10 @@ fn set_region_tombstone<ER: RaftEngine>(
     box_try!(lb.put_region_state(id, apply_state.get_applied_index(), &region_state));
 
     Ok(())
+}
+
+fn max_end_key(k: &[u8]) -> bool {
+    k == DATA_MAX_KEY || k == DATA_PREFIX_KEY
 }
 
 impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
@@ -691,7 +783,8 @@ impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
         start: &[u8],
         end: &[u8],
         limit: u64,
-    ) -> Result<impl Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>> + Send> {
+    ) -> Result<impl std::iter::Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>> + Send>
+    {
         if end.is_empty() && limit == 0 {
             return Err(Error::InvalidArgument("no limit and to_key".to_owned()));
         }
@@ -847,7 +940,7 @@ impl<ER: RaftEngine> Debugger for DebuggerImplV2<ER> {
     }
 
     fn reset_to_version(&self, _version: u64) {
-        unimplemented!()
+        unimplemented!("Not supportted");
     }
 
     fn set_kv_statistics(&mut self, s: Option<Arc<RocksStatistics>>) {
@@ -1469,11 +1562,11 @@ mod tests {
 
     // Prepare some data
     // Data for each region:
-    // Region 1: k00 .. k04
-    // Region 2: k05 .. k09
-    // Region 3: k10 .. k14
-    // Region 4: k15 .. k19  <tombstone>
-    // Region 5: k20 .. k24
+    // Region 1: k00 .. k05
+    // Region 2: k05 .. k010
+    // Region 3: k10 .. k15
+    // Region 4: k15 .. k20  <tombstone>
+    // Region 5: k20 .. k25
     // Region 6: k26 .. k28  <range of region and tablet not matched>
     fn prepare_data_on_disk(path: &Path) {
         let mut cfg = TikvConfig::default();
@@ -1541,13 +1634,15 @@ mod tests {
         assert!(debugger.scan_mvcc(b"z", b"", 0).is_err());
         assert!(debugger.scan_mvcc(b"z", b"x", 3).is_err());
 
-        let verify_scanner =
-            |range, scanner: &mut dyn Iterator<Item = raftstore::Result<(Vec<u8>, MvccInfo)>>| {
-                for i in range {
-                    let key = format!("k{:02}", i).into_bytes();
-                    assert_eq!(key, extract_key(&scanner.next().unwrap().unwrap().0));
-                }
-            };
+        let verify_scanner = |range,
+                              scanner: &mut dyn std::iter::Iterator<
+            Item = raftstore::Result<(Vec<u8>, MvccInfo)>,
+        >| {
+            for i in range {
+                let key = format!("k{:02}", i).into_bytes();
+                assert_eq!(key, extract_key(&scanner.next().unwrap().unwrap().0));
+            }
+        };
 
         // full scann
         let mut scanner = debugger.scan_mvcc(b"", b"", 100).unwrap();
@@ -2093,5 +2188,47 @@ mod tests {
                 .commit_index,
             80
         );
+    }
+
+    #[test]
+    fn test_debug_raw_scan() {
+        let dir = test_util::temp_dir("test-debugger", false);
+        prepare_data_on_disk(dir.path());
+        // construct valid keys described in `prepare_data_on_disk`
+        let mut ranges: Vec<_> = (0..28).into_iter().collect();
+        ranges.retain(|&i| (i < 15 || i >= 20) && (i != 25));
+        let expected_keys: Vec<_> = ranges
+            .into_iter()
+            .map(|i| format!("zk{:02}", i).into_bytes())
+            .collect();
+
+        let debugger = new_debugger(dir.path());
+
+        let check = |result: Result<Vec<(Vec<u8>, Vec<u8>)>>, expected: &[Vec<u8>]| {
+            assert_eq!(
+                &result.unwrap().into_iter().map(|v| v.0).collect::<Vec<_>>(),
+                expected
+            );
+        };
+
+        let keys = &expected_keys;
+        check(debugger.raw_scan(b"z", &[b'z' + 1], 100, CF_LOCK), keys);
+        check(debugger.raw_scan(b"zk", b"zz", 100, CF_LOCK), keys);
+        check(debugger.raw_scan(b"zk01", b"zk01", 100, CF_LOCK), &[]);
+        check(
+            debugger.raw_scan(b"zk01", b"zk04", 100, CF_LOCK),
+            &keys[1..4],
+        );
+        check(
+            debugger.raw_scan(b"zk03", b"zk04", 100, CF_LOCK),
+            &keys[3..4],
+        );
+        check(
+            debugger.raw_scan(b"zk06", b"zk09", 100, CF_LOCK),
+            &keys[6..9],
+        );
+        check(debugger.raw_scan(b"zk01", b"zk20", 1, CF_LOCK), &keys[1..2]);
+        check(debugger.raw_scan(b"zk01", b"zk20", 3, CF_LOCK), &keys[1..4]);
+        check(debugger.raw_scan(b"zk01", b"zk10", 8, CF_LOCK), &keys[1..9]);
     }
 }

@@ -1360,11 +1360,11 @@ impl<ER: RaftEngine> DebugExecutor for DebuggerImplV2<ER> {
         _region_ids: Option<Vec<u64>>,
         _promote_learner: bool,
     ) {
-        unimplemented!()
+        unimplemented!("deprecated in partitioned raft kv");
     }
 
     fn recreate_region(&self, _mgr: Arc<SecurityManager>, _pd_cfg: &PdConfig, _region_id: u64) {
-        unimplemented!()
+        unimplemented!("deprecated in partitioned raft kv");
     }
 
     fn dump_metrics(&self, _tags: Vec<&str>) {
@@ -1415,8 +1415,8 @@ impl<ER: RaftEngine> DebugExecutor for DebuggerImplV2<ER> {
         }
     }
 
-    fn reset_to_version(&self, _version: u64) {
-        unimplemented!()
+    fn reset_to_version(&self, version: u64) {
+        Debugger::reset_to_version(self, version);
     }
 
     fn flashback_to_version(
