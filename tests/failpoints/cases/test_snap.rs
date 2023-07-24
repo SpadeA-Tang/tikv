@@ -6,17 +6,78 @@ use std::{
     io,
     io::prelude::*,
     path::PathBuf,
-    sync::{atomic::Ordering, mpsc, Arc, Mutex},
+    sync::{
+        atomic::Ordering,
+        mpsc::{self, sync_channel},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
 
-use engine_traits::{RaftEngineDebug, RaftEngineReadOnly};
+use engine_traits::{
+    DbOptionsExt, MiscExt, RaftEngineDebug, RaftEngineReadOnly, CF_LOCK, CF_WRITE,
+};
 use kvproto::raft_serverpb::RaftMessage;
 use raft::eraftpb::MessageType;
+use raftstore_v2::router::PeerMsg;
 use test_raftstore::*;
 use test_raftstore_macro::test_case;
 use tikv_util::{config::*, time::Instant, HandyRwLock};
+
+#[test]
+fn test_putx() {
+    let mut cluster = test_raftstore_v2::new_node_cluster(0, 1);
+    cluster.run();
+
+    let key = b"key1";
+    cluster.must_put_cf(CF_LOCK, key, b"v");
+    cluster.must_put_cf(CF_WRITE, b"dummy", b"v");
+
+    fail::cfg("before_report", "return").unwrap();
+    let reg = cluster.tablet_registries.get(&1).unwrap();
+    let mut cache = reg.get(1).unwrap();
+    let tablet = cache.latest().unwrap();
+    tablet
+        .set_db_options(&[("avoid_flush_during_shutdown", "true")])
+        .unwrap();
+    tablet
+        .set_db_options(&[("atomic_flush", "true")])
+        .unwrap();
+
+    std::thread::sleep(Duration::from_millis(1000));
+    tablet.flush_cf(CF_LOCK, true).unwrap();
+
+    cluster
+        .batch_put(
+            key,
+            vec![
+                new_put_cf_cmd(CF_WRITE, key, b"value"),
+                new_delete_cmd(CF_LOCK, key),
+            ],
+        )
+        .unwrap();
+
+    drop(tablet);
+    drop(cache);
+
+    fail::cfg("flush_before_cluse_threshold", "return(1)").unwrap();
+    let router = cluster.get_router(1).unwrap();
+    let (tx, rx) = sync_channel(1);
+    let msg = PeerMsg::FlushBeforeClose { tx };
+    router.force_send(1, msg).unwrap();
+    rx.recv().unwrap();
+
+    println!("{:?}", cluster.get_cf(CF_WRITE, b"key1"));
+    println!("{:?}", cluster.get_cf(CF_LOCK, b"key1"));
+    cluster.stop_node(1);
+
+    fail::remove("before_report");
+    cluster.start().unwrap();
+
+    println!("{:?}", cluster.get_cf(CF_WRITE, b"key1"));
+    println!("{:?}", cluster.get_cf(CF_LOCK, b"key1"));
+}
 
 #[test]
 fn test_overlap_cleanup() {

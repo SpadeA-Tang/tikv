@@ -11,26 +11,6 @@ use tikv_util::{config::*, time::Instant};
 
 // TODO add epoch not match test cases.
 
-#[test]
-fn test_putx() {
-    let mut cluster = test_raftstore_v2::new_node_cluster(0, 1);
-    cluster.cfg.rocksdb.write_buffer_limit = Some(ReadableSize::mb(1));
-    cluster.run();
-
-    let data_set: Vec<_> = (1..1000)
-        .map(|i| {
-            (
-                format!("key{}", i).into_bytes(),
-                format!("value{}", i).into_bytes(),
-            )
-        })
-        .collect();
-
-    for (k, v) in data_set {
-        cluster.put(&k, &v).unwrap();
-    }
-}
-
 #[test_case(test_raftstore::new_node_cluster)]
 #[test_case(test_raftstore::new_server_cluster)]
 #[test_case(test_raftstore_v2::new_node_cluster)]

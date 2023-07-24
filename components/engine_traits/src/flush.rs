@@ -232,6 +232,7 @@ impl PersistenceListener {
         fail_point!("on_flush_completed");
         // Maybe we should hook the compaction to avoid the file is compacted before
         // being recorded.
+        println!("on flush {:?}, no {}", cf, largest_seqno);
         let offset = data_cf_offset(cf);
         let pr = {
             let mut prs = self.progress.lock().unwrap();
