@@ -122,6 +122,11 @@ impl BatchDagHandler {
 impl RequestHandler for BatchDagHandler {
     async fn handle_request(&mut self) -> Result<MemoryTraceGuard<Response>> {
         let result = self.runner.handle_request().await;
+        info!(
+            "handle_request";
+            "can_be_cached" => self.runner.can_be_cached(),
+            "data_version" => self.data_version,
+        );
         handle_qe_response(result, self.runner.can_be_cached(), self.data_version).map(|x| x.into())
     }
 

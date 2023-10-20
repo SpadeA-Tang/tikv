@@ -441,9 +441,19 @@ impl<E: Engine> Endpoint<E> {
         let mut handler = if tracker.req_ctx.cache_match_version.is_some()
             && tracker.req_ctx.cache_match_version == snapshot.ext().get_data_version()
         {
+            info!(
+                "copr request cache hit";
+                "start_ts" => tracker.req_ctx.txn_start_ts,
+            );
             // Build a cached request handler instead if cache version is matching.
             CachedRequestHandler::builder()(snapshot, &tracker.req_ctx)?
         } else {
+            info!(
+                "copr request cache miss";
+                "start_ts" => tracker.req_ctx.txn_start_ts,
+                "expected_apply_index" => tracker.req_ctx.cache_match_version,
+                "current_apply_index" => snapshot.ext().get_data_version(),
+            );
             handler_builder(snapshot, &tracker.req_ctx)?
         };
 
