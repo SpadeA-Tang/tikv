@@ -181,7 +181,7 @@ impl RangeManager {
         meta.ranges_evcited
             .iter()
             .filter(|r| {
-                r.overlaps(range) && !meta.range_snapshot_list.keys().any(|r| r.overlaps(range))
+                r.overlaps(range) && !meta.range_snapshot_list.keys().any(|r2| r2.overlaps(r))
             })
             .map(|r| r.clone())
             .collect()

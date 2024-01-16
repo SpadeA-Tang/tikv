@@ -1816,6 +1816,11 @@ mod tests {
         let s1 = engine.snapshot(range.clone(), 10, 10);
         let s2 = engine.snapshot(range, 20, 20);
         engine.mark_range_evicted(&evict_range);
+        let range_left = CacheRange::new(construct_user_key(0), construct_user_key(10));
+        let s3 = engine.snapshot(range_left, 20, 20).unwrap();
+        let range_right = CacheRange::new(construct_user_key(20), construct_user_key(30));
+        let s4 = engine.snapshot(range_right, 20, 20).unwrap();
+
         {
             let removed = engine.memory_limiter.removed.lock().unwrap();
             for i in 10..20 {
@@ -1836,6 +1841,8 @@ mod tests {
         }
 
         drop(s2);
+        // s2 is dropped, so the range of `evict_range` is removed. The snapshot of s3
+        // and s4 does not prevent it as they are not overlapped.
         {
             let removed = engine.memory_limiter.removed.lock().unwrap();
             for i in 10..20 {
