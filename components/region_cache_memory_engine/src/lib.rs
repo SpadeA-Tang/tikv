@@ -4,6 +4,7 @@
 #![allow(unused_variables)]
 #![feature(let_chains)]
 #![feature(slice_pattern)]
+#![feature(btree_extract_if)]
 
 mod engine;
 pub mod keys;

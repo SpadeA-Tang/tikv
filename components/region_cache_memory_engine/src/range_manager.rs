@@ -148,14 +148,95 @@ impl RangeManager {
         }
     }
 
-    pub(crate) fn range_evictable(&self, range: &CacheRange) -> bool {
-        unimplemented!()
+    // return true means we can evict it directly
+    pub(crate) fn mark_range_evicted(&mut self, range: &CacheRange) -> bool {
+        let range_key = self
+            .ranges
+            .keys()
+            .find(|&r| r.contains(range))
+            .unwrap()
+            .clone();
+        let meta = self.ranges.get_mut(&range_key).unwrap();
+        assert!(meta.ranges_evcited.insert(range.clone()));
+        !meta.range_snapshot_list.keys().any(|r| r.overlaps(range))
+    }
+
+    // A range is evictable if:
+    // 1. it is marked as evicted (so it's in the ranges_evicted)
+    // 2. there's no snapshot whose range overlap with it
+    //
+    // `range` denotes the range of the snapshot dropped and after the drop, there
+    // may be some ranges marked evicated can be evicted now.
+    pub(crate) fn ranges_evictable_after_snapshot_drop(
+        &mut self,
+        range: &CacheRange,
+    ) -> Vec<CacheRange> {
+        let range_key = self
+            .ranges
+            .keys()
+            .find(|&r| r.contains(range))
+            .unwrap()
+            .clone();
+        let meta = self.ranges.get_mut(&range_key).unwrap();
+        meta.ranges_evcited
+            .iter()
+            .filter(|r| {
+                r.overlaps(range) && !meta.range_snapshot_list.keys().any(|r| r.overlaps(range))
+            })
+            .map(|r| r.clone())
+            .collect()
     }
 
     // Evict a range which results in a split of the range containing it. Meta
     // should also be splitted.
+    // Note: this should only be called when there's no snapshots whose range is
+    // overlapped with `range`
     pub(crate) fn evict_range(&mut self, range: &CacheRange) {
-        unimplemented!()
+        let range_key = self
+            .ranges
+            .keys()
+            .find(|&r| r.contains(range))
+            .unwrap()
+            .clone();
+        let mut meta = self.ranges.remove(&range_key).unwrap();
+
+        assert!(meta.ranges_evcited.remove(range));
+        let range_snapshot_list2 = meta.range_snapshot_list.split_off(&range_key);
+        let evicted2 = meta.ranges_evcited.split_off(&range_key);
+        let unreadable2 = meta.ranges_unreadable.split_off(&range_key);
+
+        // range overlap assertion check
+        if let Some(r) = range_snapshot_list2.keys().next() {
+            assert!(!r.overlaps(range));
+        }
+        if let Some(r) = meta.range_snapshot_list.keys().last() {
+            assert!(!r.overlaps(range));
+        }
+        if let Some(r) = evicted2.iter().next() {
+            assert!(!r.overlaps(range));
+        }
+        if let Some(r) = meta.ranges_evcited.iter().last() {
+            assert!(!r.overlaps(range));
+        }
+        if let Some(r) = unreadable2.iter().next() {
+            assert!(!r.overlaps(range));
+        }
+        if let Some(r) = meta.ranges_unreadable.iter().last() {
+            assert!(!r.overlaps(range));
+        }
+
+        let (r1, r2) = range_key.split_off(range);
+        let safe_ts = meta.safe_ts;
+        self.ranges.insert(r1, meta);
+        self.ranges.insert(
+            r2,
+            RangeMeta {
+                range_snapshot_list: range_snapshot_list2,
+                ranges_evcited: evicted2,
+                ranges_unreadable: unreadable2,
+                safe_ts,
+            },
+        );
     }
 }
 
