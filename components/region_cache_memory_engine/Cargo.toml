@@ -7,11 +7,16 @@ license = "Apache-2.0"
 
 [features]
 testexport = []
+default = ["use_std"]
+use_std = ["crossbeam-epoch/use_std"]
+nightly = ["crossbeam-epoch/nightly"]
 
 [dependencies]
+crossbeam-epoch = {version = "0.4.1", default-features = false}
+crossbeam-utils = {version = "0.3.0", default-features = false}
 engine_traits = { workspace = true }
 collections = { workspace = true }
-skiplist-rs = { git = "https://github.com/tikv/skiplist-rs.git", branch = "main" }
+skiplist-rs = { git = "https://github.com/SpadeA-Tang/skiplist-rs.git", branch = "delete-epoch" }
 bytes = "1.0"
 tikv_util = { workspace = true }
 txn_types = { workspace = true }

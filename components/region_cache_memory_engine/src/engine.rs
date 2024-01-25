@@ -9,6 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use crossbeam_epoch::default_collector;
 use engine_rocks::{raw::SliceTransform, util::FixedSuffixSliceTransform};
 use engine_traits::{
     CacheRange, CfNamesExt, DbVector, Error, IterOptions, Iterable, Iterator, Peekable,
@@ -45,19 +46,23 @@ pub struct SkiplistEngine {
 
 impl SkiplistEngine {
     pub fn new(global_limiter: Arc<GlobalMemoryLimiter>) -> Self {
+        let collector = default_collector();
         SkiplistEngine {
             data: [
                 Arc::new(Skiplist::new(
                     InternalKeyComparator::default(),
                     global_limiter.clone(),
+                    collector.clone(),
                 )),
                 Arc::new(Skiplist::new(
                     InternalKeyComparator::default(),
                     global_limiter.clone(),
+                    collector.clone(),
                 )),
                 Arc::new(Skiplist::new(
                     InternalKeyComparator::default(),
                     global_limiter.clone(),
+                    collector.clone(),
                 )),
             ],
         }
