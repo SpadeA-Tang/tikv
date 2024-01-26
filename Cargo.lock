@@ -5344,7 +5344,7 @@ checksum = "fa8f3741c7372e75519bd9346068370c9cdaabcc1f9599cbcf2a2719352286b7"
 [[package]]
 name = "skiplist-rs"
 version = "0.1.0"
-source = "git+https://github.com/SpadeA-Tang/skiplist-rs.git?branch=delete-epoch#1fe8c3741f279b0959ce2f370435aa28d51f671d"
+source = "git+https://github.com/SpadeA-Tang/skiplist-rs.git?branch=delete-epoch#5a06921221bd6b93f4a3b67ea98ca228f33b96b3"
 dependencies = [
  "bytes",
  "crossbeam-epoch 0.4.3",
