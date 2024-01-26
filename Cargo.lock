@@ -4558,8 +4558,6 @@ version = "0.0.1"
 dependencies = [
  "bytes",
  "collections",
- "crossbeam-epoch 0.4.3",
- "crossbeam-utils 0.3.2",
  "engine_rocks",
  "engine_traits",
  "log_wrappers",
