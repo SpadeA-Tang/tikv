@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use engine_traits::{
     CacheRange, Mutable, Result, WriteBatch, WriteBatchExt, WriteOptions, CF_DEFAULT,
 };
@@ -8,7 +8,7 @@ use tikv_util::box_err;
 
 use crate::{
     engine::{cf_to_id, RangeCacheMemoryEngineCore, SkiplistEngine},
-    keys::{encode_key, ValueType},
+    keys::{encode_key, encode_key_into, ValueType, ENC_KEY_SEQ_LENGTH},
     range_manager::RangeManager,
     RangeCacheMemoryEngine,
 };
@@ -126,30 +126,42 @@ impl WriteBatchEntryInternal {
 #[derive(Clone, Debug)]
 pub(crate) struct RangeCacheWriteBatchEntry {
     cf: usize,
-    key: Bytes,
+    key: BytesMut,
     inner: WriteBatchEntryInternal,
 }
 
 impl RangeCacheWriteBatchEntry {
     pub fn put_value(cf: &str, key: &[u8], value: &[u8]) -> Self {
+        let mut k = BytesMut::with_capacity(key.len() + ENC_KEY_SEQ_LENGTH);
+        k.put_slice(key);
         Self {
             cf: cf_to_id(cf),
-            key: Bytes::copy_from_slice(key),
+            key: k,
             inner: WriteBatchEntryInternal::PutValue(Bytes::copy_from_slice(value)),
         }
     }
 
     pub fn deletion(cf: &str, key: &[u8]) -> Self {
+        let mut k = BytesMut::with_capacity(key.len() + ENC_KEY_SEQ_LENGTH);
+        k.put_slice(key);
         Self {
             cf: cf_to_id(cf),
-            key: Bytes::copy_from_slice(key),
+            key: k,
             inner: WriteBatchEntryInternal::Deletion,
         }
     }
 
     #[inline]
-    pub fn encode(&self, seq: u64) -> (Bytes, Bytes) {
-        self.inner.encode(&self.key, seq)
+    pub fn encode(self, seq: u64) -> (Bytes, Bytes) {
+        let RangeCacheWriteBatchEntry { key, inner, cf } = self;
+        match inner {
+            WriteBatchEntryInternal::PutValue(value) => {
+                (encode_key_into(key, seq, ValueType::Value), value.clone())
+            }
+            WriteBatchEntryInternal::Deletion => {
+                (encode_key_into(key, seq, ValueType::Deletion), Bytes::new())
+            }
+        }
     }
 
     pub fn data_size(&self) -> usize {
@@ -192,7 +204,7 @@ impl RangeCacheWriteBatchEntry {
     }
 
     #[inline]
-    pub fn write_to_memory(&self, skiplist_engine: &SkiplistEngine, seq: u64) -> Result<()> {
+    pub fn write_to_memory(self, skiplist_engine: &SkiplistEngine, seq: u64) -> Result<()> {
         let handle = &skiplist_engine.data[self.cf];
         let (key, value) = self.encode(seq);
         let _ = handle.put(key, value);

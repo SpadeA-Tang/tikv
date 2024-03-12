@@ -106,6 +106,13 @@ pub fn encode_key(key: &[u8], seq: u64, v_type: ValueType) -> Bytes {
 }
 
 #[inline]
+pub fn encode_key_into(mut key: BytesMut, seq: u64, v_type: ValueType) -> Bytes {
+    assert_eq!(key.capacity(), key.len() + ENC_KEY_SEQ_LENGTH);
+    key.put_u64((seq << 8) | v_type as u64);
+    key.freeze()
+}
+
+#[inline]
 pub fn encode_seek_key(key: &[u8], seq: u64, v_type: ValueType) -> Vec<u8> {
     encode_key_internal::<Vec<_>>(key, seq, v_type, Vec::with_capacity)
 }
