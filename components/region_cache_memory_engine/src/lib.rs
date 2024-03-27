@@ -2,6 +2,7 @@
 
 #![feature(let_chains)]
 #![feature(slice_pattern)]
+#![feature(test)]
 
 mod background;
 mod engine;
@@ -39,8 +40,8 @@ impl EngineConfig {
     pub fn config_for_test() -> EngineConfig {
         EngineConfig::new(
             Duration::from_secs(600),
-            ReadableSize::gb(1).0 as usize,
-            ReadableSize::gb(2).0 as usize,
+            ReadableSize::gb(10).0 as usize,
+            ReadableSize::gb(20).0 as usize,
         )
     }
 }

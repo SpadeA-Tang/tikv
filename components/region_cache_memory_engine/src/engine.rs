@@ -921,10 +921,13 @@ mod tests {
     use bytes::{BufMut, Bytes};
     use crossbeam::epoch;
     use engine_traits::{
-        CacheRange, IterOptions, Iterable, Iterator, Peekable, RangeCacheEngine, ReadOptions,
+        CacheRange, IterOptions, Iterable, Iterator, Mutable, Peekable, RangeCacheEngine,
+        ReadOptions, CF_WRITE,
     };
     use skiplist_rs::SkipList;
+    use tikv_jemalloc_ctl::{stats, Error};
 
+    // use tikv_jemalloc_ctl::{stats, Error};
     use super::{cf_to_id, RangeCacheIterator, SkiplistEngine};
     use crate::{
         keys::{
@@ -2092,5 +2095,145 @@ mod tests {
 
         drop(s4);
         verify_evict_range_deleted(&engine, &range_left_eviction);
+    }
+
+    use engine_traits::{WriteBatch, WriteBatchExt};
+
+    extern crate test;
+    #[bench]
+    fn bench_memory_engine(b: &mut test::Bencher) {
+        let engine = Arc::new(RangeCacheMemoryEngine::new(EngineConfig::config_for_test()));
+        engine.new_range(CacheRange::new(b"".to_vec(), b"z".to_vec()));
+        let mut keys = vec![];
+        let key: Vec<u8> = (0..100).into_iter().map(|_| 'k' as u8).collect();
+        let val: Vec<u8> = (0..100).into_iter().map(|_| 'v' as u8).collect();
+        for i in 0..100 {
+            keys.push(format!("{:?}-{}", key, i));
+        }
+
+        b.iter(|| {
+            std::thread::scope(|s| {
+                for _ in 0..2 {
+                    s.spawn(|| {
+                        let mut wb = engine.write_batch_with_cap(100);
+                        let _ = wb.set_sequence_number(100);
+                        wb.prepare_for_range(CacheRange::new(b"".to_vec(), b"z".to_vec()));
+                        for k in &keys {
+                            let _ = wb.put(k.as_bytes(), &val);
+                            let _ = wb.put_cf(CF_WRITE, k.as_bytes(), &val);
+                        }
+                        wb.write().unwrap();
+                    });
+                }
+            });
+        });
+    }
+
+    pub type AllocStats = Vec<(&'static str, usize)>;
+
+    pub fn fetch_stats() -> Result<Option<AllocStats>, Error> {
+        // Stats are cached. Need to advance epoch to refresh.
+        tikv_jemalloc_ctl::epoch::advance()?;
+
+        Ok(Some(vec![
+            ("allocated", stats::allocated::read()?),
+            ("active", stats::active::read()?),
+            ("metadata", stats::metadata::read()?),
+            ("resident", stats::resident::read()?),
+            ("mapped", stats::mapped::read()?),
+            ("retained", stats::retained::read()?),
+            (
+                "fragmentation",
+                stats::active::read()? - stats::allocated::read()?,
+            ),
+        ]))
+    }
+
+    #[cfg(not(target_env = "msvc"))]
+    use tikv_jemallocator::Jemalloc;
+
+    #[cfg(not(target_env = "msvc"))]
+    #[global_allocator]
+    static GLOBAL: Jemalloc = Jemalloc;
+
+    #[test]
+    fn test_memory_consumption() {
+        let engine = Arc::new(RangeCacheMemoryEngine::new(EngineConfig::config_for_test()));
+        engine.new_range(CacheRange::new(b"".to_vec(), b"z".to_vec()));
+        let key: Vec<u8> = (0..1000).into_iter().map(|_| 'k' as u8).collect();
+        let val: Vec<u8> = (0..1000).into_iter().map(|_| 'v' as u8).collect();
+
+        for j in 0..100 {
+            let mut keys = vec![];
+            for i in 0..2000 {
+                let mut k = key.to_vec();
+                let mut a = (j * 100000 + i as u64).to_be_bytes().to_vec();
+                k.append(&mut a);
+                keys.push(k);
+            }
+
+            let mut wb = engine.write_batch_with_cap(200);
+            let _ = wb.set_sequence_number(100);
+            wb.prepare_for_range(CacheRange::new(b"".to_vec(), b"z".to_vec()));
+            for k in &keys {
+                let _ = wb.put(k, &val);
+                let _ = wb.put_cf(CF_WRITE, k, &val);
+            }
+
+            wb.write().unwrap();
+            drop(wb);
+            drop(keys);
+
+            if j % 10 == 0 {
+                println!("{:?}", fetch_stats());
+                println!("memory {:?}", engine.memory_controller.mem_usage());
+            }
+        }
+
+        println!("========= begin to delete =========");
+        for i in 0..10000 {
+            let iter = engine.core.read().engine();
+            {
+                let default = iter.cf_handle("default");
+                let write = iter.cf_handle("write");
+
+                let mut default_iter = default.iterator();
+                let mut write_iter = write.iterator();
+                let guard = &epoch::pin();
+                default_iter.seek_to_first(guard);
+                write_iter.seek_to_first(guard);
+                for _ in 0..20 {
+                    default.remove(default_iter.key(), guard);
+                    write.remove(write_iter.key(), guard);
+                    default_iter.next(guard);
+                    write_iter.next(guard);
+                }
+                guard.flush();
+            }
+
+            if i % 2000 == 0 {
+                for _ in 0..128 {
+                    let _ = &epoch::pin();
+                }
+
+                println!("{:?}", fetch_stats());
+                println!("Memory {:?}", engine.memory_controller.mem_usage());
+                println!(
+                    "Node remaining count {}",
+                    engine.memory_controller.skiplist_engine.node_count()
+                );
+            }
+        }
+
+        for _ in 0..128 {
+            let _ = &epoch::pin();
+        }
+
+        println!("{:?}", fetch_stats());
+        println!("Memory usage {:?}", engine.memory_controller.mem_usage());
+        println!(
+            "Node remaining count {}",
+            engine.memory_controller.skiplist_engine.node_count()
+        );
     }
 }

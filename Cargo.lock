@@ -4608,6 +4608,8 @@ dependencies = [
  "tempfile",
  "test_pd",
  "test_pd_client",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
  "tikv_util",
  "txn_types",
  "yatp",

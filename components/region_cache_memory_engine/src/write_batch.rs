@@ -120,16 +120,18 @@ impl RangeCacheWriteBatch {
             });
         self.memory_controller.on_node_written(entry_counts);
 
-        if let Err(e) = self
-            .engine
-            .bg_worker_manager()
-            .schedule_task(BackgroundTask::DeleteRange(ranges_to_delete))
-        {
-            error!(
-                "schedule delete range failed";
-                "err" => ?e,
-            );
-            assert!(tikv_util::thread_group::is_shutdown(!cfg!(test)));
+        if !ranges_to_delete.is_empty() {
+            if let Err(e) = self
+                .engine
+                .bg_worker_manager()
+                .schedule_task(BackgroundTask::DeleteRange(ranges_to_delete))
+            {
+                error!(
+                    "schedule delete range failed";
+                    "err" => ?e,
+                );
+                assert!(tikv_util::thread_group::is_shutdown(!cfg!(test)));
+            }
         }
 
         res

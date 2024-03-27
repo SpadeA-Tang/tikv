@@ -37,3 +37,9 @@ keys = { workspace = true }
 tempfile = "3.0"
 test_pd = { workspace = true }
 test_pd_client = { workspace = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.5"
+
+[dependencies.tikv-jemalloc-ctl]
+version = "0.5.0"

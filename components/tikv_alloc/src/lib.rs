@@ -127,8 +127,8 @@ mod imp;
 
 pub use crate::{imp::*, trace::*};
 
-#[global_allocator]
-static ALLOC: imp::Allocator = imp::allocator();
+// #[global_allocator]
+// static ALLOC: imp::Allocator = imp::allocator();
 
 #[cfg(test)]
 mod runner {
