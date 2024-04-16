@@ -17,10 +17,7 @@ use fail::fail_point;
 use keys::DATA_PREFIX_KEY;
 use kvproto::{kvrpcpb::ExtraOp as TxnExtraOp, metapb::Region, raft_serverpb::RaftApplyState};
 use pd_client::BucketMeta;
-use tikv_util::{
-    box_err, error, keybuilder::KeyBuilder, metrics::CRITICAL_ERROR,
-    panic_when_unexpected_key_or_data, set_panic_mark,
-};
+use tikv_util::{box_err, error, info, keybuilder::KeyBuilder, metrics::CRITICAL_ERROR, panic_when_unexpected_key_or_data, set_panic_mark};
 
 use crate::{
     store::{util, PeerStorage, TxnExt},
@@ -324,6 +321,12 @@ where
     ) -> RegionIterator<S> {
         update_lower_bound(&mut iter_opt, &region);
         update_upper_bound(&mut iter_opt, &region);
+
+        info!(
+            "region iterator";
+            "region_start" => log_wrappers::Value(&region.start_key),
+            "region_end" => log_wrappers::Value(&region.end_key),
+        );
         let iter = snap
             .iterator_opt(cf, iter_opt)
             .expect("creating snapshot iterator"); // FIXME error handling

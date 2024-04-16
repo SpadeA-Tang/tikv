@@ -13,7 +13,7 @@ use engine_traits::{
 };
 use skiplist_rs::{base::OwnedIter, SkipList};
 use slog_global::error;
-use tikv_util::box_err;
+use tikv_util::{box_err, info};
 
 use crate::{
     background::BackgroundTask,
@@ -70,6 +70,10 @@ impl RangeCacheSnapshot {
     ) -> result::Result<Self, FailedReason> {
         let mut core = engine.core.write();
         let range_id = core.range_manager.range_snapshot(&range, read_ts)?;
+        info!(
+            "acquire snapshot success";
+            "range" => ?range,
+        );
         Ok(RangeCacheSnapshot {
             snapshot_meta: RangeCacheSnapshotMeta::new(range_id, range, read_ts, seq_num),
             skiplist_engine: core.engine.clone(),
@@ -125,11 +129,10 @@ impl Iterable for RangeCacheSnapshot {
             || upper_bound > self.snapshot_meta.range.end
         {
             return Err(Error::Other(box_err!(
-                "the bounderies required [{}, {}] exceeds the range of the snapshot [{}, {}]",
+                "the bounderies required [{}, {}] exceeds the range of the snapshot, range: {:?}",
                 log_wrappers::Value(&lower_bound),
                 log_wrappers::Value(&upper_bound),
-                log_wrappers::Value(&self.snapshot_meta.range.start),
-                log_wrappers::Value(&self.snapshot_meta.range.end)
+                self.snapshot_meta.range
             )));
         }
 

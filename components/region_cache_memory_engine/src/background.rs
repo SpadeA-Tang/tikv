@@ -26,7 +26,7 @@ use yatp::Remote;
 use crate::{
     engine::{RangeCacheMemoryEngineCore, SkiplistHandle},
     keys::{decode_key, encode_key, encoding_for_filter, InternalBytes, InternalKey, ValueType},
-    memory_controller::MemoryController,
+    memory_controller::{MemoryController, MemoryUsage},
     metrics::{
         GC_FILTERED_STATIC, RANGE_CACHE_MEMORY_USAGE, RANGE_GC_TIME_HISTOGRAM,
         RANGE_LOAD_TIME_HISTOGRAM,
@@ -35,6 +35,7 @@ use crate::{
     region_label::{
         LabelRule, RegionLabelAddedCb, RegionLabelRulesManager, RegionLabelServiceBuilder,
     },
+    write_batch::RangeCacheWriteBatchEntry,
 };
 
 /// Try to extract the key and `u64` timestamp from `encoded_key`.
@@ -513,6 +514,9 @@ impl Runnable for BackgroundRunner {
     fn run(&mut self, task: Self::Task) {
         match task {
             BackgroundTask::Gc(t) => {
+                info!(
+                    "start a new round of gc for range cache engine";
+                );
                 let mut core = self.core.clone();
                 if let Some(ranges) = core.ranges_for_gc() {
                     let f = async move {
@@ -550,32 +554,64 @@ impl Runnable for BackgroundRunner {
                             core.on_snapshot_load_canceled(range);
                             continue;
                         }
-                        let start = Instant::now();
-                        for &cf in DATA_CFS {
-                            let guard = &epoch::pin();
-                            let handle = skiplist_engine.cf_handle(cf);
-                            match snap.iterator_opt(cf, iter_opt.clone()) {
-                                Ok(mut iter) => {
-                                    iter.seek_to_first().unwrap();
-                                    while iter.valid().unwrap() {
-                                        // use 0 sequence number here as the kv is clearly
-                                        // visible
-                                        let mut encoded_key =
-                                            encode_key(iter.key(), 0, ValueType::Value);
-                                        let mut val =
-                                            InternalBytes::from_vec(iter.value().to_vec());
-                                        encoded_key
-                                            .set_memory_controller(core.memory_controller.clone());
-                                        val.set_memory_controller(core.memory_controller.clone());
-                                        handle.insert(encoded_key, val, guard);
-                                        iter.next().unwrap();
+
+                        let snapshot_load = || -> bool {
+                            for &cf in DATA_CFS {
+                                let handle = skiplist_engine.cf_handle(cf);
+                                let guard = &epoch::pin();
+                                match snap.iterator_opt(cf, iter_opt.clone()) {
+                                    Ok(mut iter) => {
+                                        iter.seek_to_first().unwrap();
+                                        while iter.valid().unwrap() {
+                                            // use 0 sequence number here as the kv is clearly
+                                            // visible
+                                            let mut encoded_key =
+                                                encode_key(iter.key(), 0, ValueType::Value);
+                                            let mut val =
+                                                InternalBytes::from_vec(iter.value().to_vec());
+
+                                            let mem_size =
+                                                RangeCacheWriteBatchEntry::calc_put_entry_size(
+                                                    encoded_key.as_bytes(),
+                                                    val.as_bytes(),
+                                                );
+                                            if matches!(
+                                                core.memory_controller.acquire(mem_size),
+                                                MemoryUsage::HardLimitReached(_)
+                                            ) {
+                                                warn!(
+                                                    "the memory usage of in-memory engine reaches to hard limit in snapshot loading";
+                                                    "range" => ?range,
+                                                );
+                                                return false;
+                                            }
+
+                                            encoded_key.set_memory_controller(
+                                                core.memory_controller.clone(),
+                                            );
+                                            val.set_memory_controller(
+                                                core.memory_controller.clone(),
+                                            );
+                                            handle.insert(encoded_key, val, guard);
+                                            iter.next().unwrap();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("creating rocksdb iterator failed"; "cf" => cf, "err" => %e);
+                                        unimplemented!();
                                     }
                                 }
-                                Err(e) => {
-                                    error!("creating rocksdb iterator failed"; "cf" => cf, "err" => %e);
-                                }
                             }
+                            true
+                        };
+
+                        let start = Instant::now();
+                        if !snapshot_load() {
+                            core.delete_ranges(&[range.clone()]);
+                            core.on_snapshot_load_canceled(range);
+                            continue;
                         }
+
                         if core.on_snapshot_load_finished(range.clone()) {
                             let duration = start.saturating_elapsed();
                             RANGE_LOAD_TIME_HISTOGRAM.observe(duration.as_secs_f64());

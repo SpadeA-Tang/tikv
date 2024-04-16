@@ -694,14 +694,14 @@ impl SplitCheckTrigger {
 
 #[derive(Getters, MutGetters)]
 pub struct Peer<EK, ER>
-where
-    EK: KvEngine,
-    ER: RaftEngine,
+    where
+        EK: KvEngine,
+        ER: RaftEngine,
 {
     /// The ID of the Region which this Peer belongs to.
     region_id: u64,
     // TODO: remove it once panic!() support slog fields.
-    /// Peer_tag, "[region <region_id>] <peer_id>"
+    /// Peer_tag, "[region<region_id>] <peer_id>"
     pub tag: String,
     /// The Peer meta information.
     pub peer: metapb::Peer,
@@ -920,9 +920,9 @@ where
 }
 
 impl<EK, ER> Peer<EK, ER>
-where
-    EK: KvEngine,
-    ER: RaftEngine,
+    where
+        EK: KvEngine,
+        ER: RaftEngine,
 {
     pub fn new(
         store_id: u64,
@@ -1186,11 +1186,11 @@ where
         {
             if self.max_apply_unpersisted_log_limit > 0
                 && self
-                    .raft_group
-                    .raft
-                    .raft_log
-                    .max_apply_unpersisted_log_limit
-                    == 0
+                .raft_group
+                .raft
+                .raft_log
+                .max_apply_unpersisted_log_limit
+                == 0
             {
                 RAFT_ENABLE_UNPERSISTED_APPLY_GAUGE.inc();
             }
@@ -2221,27 +2221,27 @@ where
                 StaleState::Valid
             }
             Some(instant)
-                if instant.saturating_elapsed() >= ctx.cfg.max_leader_missing_duration.0 =>
-            {
-                // Resets the `leader_missing_time` to avoid sending the same tasks to
-                // PD worker continuously during the leader missing timeout.
-                self.leader_missing_time = Instant::now().into();
-                StaleState::ToValidate
-            }
-            Some(instant)
-                if instant.saturating_elapsed() >= ctx.cfg.abnormal_leader_missing_duration.0 =>
-            {
-                // A peer is considered as in the leader missing state
-                // if it's initialized but is isolated from its leader or
-                // something bad happens that the raft group can not elect a leader.
-                if self.is_initialized() && self.raft_group.raft.promotable() {
-                    StaleState::LeaderMissing
-                } else {
-                    // Uninitialized peer and learner may not have leader info,
-                    // even if there is a valid leader.
-                    StaleState::MaybeLeaderMissing
+            if instant.saturating_elapsed() >= ctx.cfg.max_leader_missing_duration.0 =>
+                {
+                    // Resets the `leader_missing_time` to avoid sending the same tasks to
+                    // PD worker continuously during the leader missing timeout.
+                    self.leader_missing_time = Instant::now().into();
+                    StaleState::ToValidate
                 }
-            }
+            Some(instant)
+            if instant.saturating_elapsed() >= ctx.cfg.abnormal_leader_missing_duration.0 =>
+                {
+                    // A peer is considered as in the leader missing state
+                    // if it's initialized but is isolated from its leader or
+                    // something bad happens that the raft group can not elect a leader.
+                    if self.is_initialized() && self.raft_group.raft.promotable() {
+                        StaleState::LeaderMissing
+                    } else {
+                        // Uninitialized peer and learner may not have leader info,
+                        // even if there is a valid leader.
+                        StaleState::MaybeLeaderMissing
+                    }
+                }
             _ => StaleState::Valid,
         }
     }
@@ -3797,9 +3797,9 @@ where
             // the boolean expression below.
             let is_merging = self.is_merging()
                 || self
-                    .cmd_epoch_checker
-                    .last_cmd_index(AdminCmdType::PrepareMerge)
-                    .is_some();
+                .cmd_epoch_checker
+                .last_cmd_index(AdminCmdType::PrepareMerge)
+                .is_some();
             if !is_merging {
                 let mut pessimistic_locks = self.txn_ext.pessimistic_locks.write();
                 if pessimistic_locks.status == LocksStatus::MergingRegion {
@@ -4040,11 +4040,11 @@ where
             // The leader may be hibernated, send a message for trying to awaken the leader.
             if self.bcast_wake_up_time.is_none()
                 || self
-                    .bcast_wake_up_time
-                    .as_ref()
-                    .unwrap()
-                    .saturating_elapsed()
-                    >= Duration::from_millis(MIN_BCAST_WAKE_UP_INTERVAL)
+                .bcast_wake_up_time
+                .as_ref()
+                .unwrap()
+                .saturating_elapsed()
+                >= Duration::from_millis(MIN_BCAST_WAKE_UP_INTERVAL)
             {
                 self.bcast_wake_up_message(poll_ctx);
                 self.bcast_wake_up_time = Some(TiInstant::now_coarse());
@@ -4476,7 +4476,7 @@ where
         if (self.pending_merge_state.is_some()
             && req.get_admin_request().get_cmd_type() != AdminCmdType::RollbackMerge)
             || (self.prepare_merge_fence > 0
-                && req.get_admin_request().get_cmd_type() != AdminCmdType::PrepareMerge)
+            && req.get_admin_request().get_cmd_type() != AdminCmdType::PrepareMerge)
         {
             return Err(Error::ProposalInMergingMode(self.region_id));
         }
@@ -4554,7 +4554,7 @@ where
         // Prepare Merge need to be broadcast to as many as followers when disk full.
         if req.has_admin_request()
             && (!matches!(poll_ctx.self_disk_usage, DiskUsage::Normal)
-                || !self.disk_full_peers.is_empty())
+            || !self.disk_full_peers.is_empty())
         {
             match req.get_admin_request().get_cmd_type() {
                 AdminCmdType::PrepareMerge | AdminCmdType::RollbackMerge => {
@@ -4903,7 +4903,7 @@ where
         Ok(propose_index)
     }
 
-    fn handle_read<E: ReadExecutor<Tablet = EK>>(
+    fn handle_read<E: ReadExecutor<Tablet=EK>>(
         &self,
         reader: &mut E,
         req: RaftCmdRequest,
@@ -5228,9 +5228,9 @@ where
             && self.raft_group.raft.lead_transferee.is_none()
             && self.has_applied_to_current_term()
             && self
-                .cmd_epoch_checker
-                .propose_check_epoch(cmd, self.term())
-                .is_none()
+            .cmd_epoch_checker
+            .propose_check_epoch(cmd, self.term())
+            .is_none()
     }
 
     pub fn maybe_gen_approximate_buckets<T>(&self, ctx: &PollContext<EK, ER, T>) {
@@ -5280,10 +5280,10 @@ where
 
     pub fn snapshot_recovery_maybe_finish_wait_apply(&mut self, force: bool) {
         if let Some(SnapshotBrState::WaitLogApplyToLast {
-            target_index,
-            valid_for_term,
-            ..
-        }) = &self.snapshot_recovery_state
+                        target_index,
+                        valid_for_term,
+                        ..
+                    }) = &self.snapshot_recovery_state
         {
             if valid_for_term
                 .map(|vt| vt != self.raft_group.raft.term)
@@ -5292,10 +5292,10 @@ where
                 info!("leadership changed, aborting syncer because required."; "region_id" => self.region().id);
                 match self.snapshot_recovery_state.take() {
                     Some(SnapshotBrState::WaitLogApplyToLast {
-                        syncer,
-                        valid_for_term,
-                        ..
-                    }) => {
+                             syncer,
+                             valid_for_term,
+                             ..
+                         }) => {
                         syncer.abort(AbortReason::StaleCommand {
                             region_id: self.region().get_id(),
                             expected_term: valid_for_term.unwrap_or_default(),
@@ -5356,9 +5356,9 @@ impl DiskFullPeers {
 }
 
 impl<EK, ER> Peer<EK, ER>
-where
-    EK: KvEngine,
-    ER: RaftEngine,
+    where
+        EK: KvEngine,
+        ER: RaftEngine,
 {
     pub fn insert_peer_cache(&mut self, peer: metapb::Peer) {
         self.peer_cache.borrow_mut().insert(peer.get_id(), peer);
@@ -5803,7 +5803,7 @@ pub trait RequestInspector {
             }
             if get_transfer_leader_cmd(req).is_some()
                 && !WriteBatchFlags::from_bits_truncate(req.get_header().get_flags())
-                    .contains(WriteBatchFlags::TRANSFER_LEADER_PROPOSAL)
+                .contains(WriteBatchFlags::TRANSFER_LEADER_PROPOSAL)
             {
                 return Ok(RequestPolicy::ProposeTransferLeader);
             }
@@ -5866,9 +5866,9 @@ pub trait RequestInspector {
 }
 
 impl<EK, ER> RequestInspector for Peer<EK, ER>
-where
-    EK: KvEngine,
-    ER: RaftEngine,
+    where
+        EK: KvEngine,
+        ER: RaftEngine,
 {
     fn has_applied_to_current_term(&mut self) -> bool {
         self.get_store().applied_term() == self.term()
@@ -5895,9 +5895,9 @@ where
 }
 
 impl<EK, ER, T> ReadExecutor for PollContext<EK, ER, T>
-where
-    EK: KvEngine,
-    ER: RaftEngine,
+    where
+        EK: KvEngine,
+        ER: RaftEngine,
 {
     type Tablet = EK;
 
@@ -5991,9 +5991,9 @@ mod memtrace {
     use super::*;
 
     impl<EK, ER> Peer<EK, ER>
-    where
-        EK: KvEngine,
-        ER: RaftEngine,
+        where
+            EK: KvEngine,
+            ER: RaftEngine,
     {
         pub fn proposal_size(&self) -> usize {
             let mut heap_size = self.pending_reads.approximate_heap_size();
@@ -6006,18 +6006,18 @@ mod memtrace {
         pub fn rest_size(&self) -> usize {
             // 2 words for every item in `peer_heartbeats`.
             16 * self.peer_heartbeats.capacity()
-            // 2 words for every item in `peers_start_pending_time`.
-            + 16 * self.peers_start_pending_time.capacity()
-            // 1 word for every item in `down_peer_ids`
-            + 8 * self.down_peer_ids.capacity()
-            + mem::size_of::<metapb::Peer>() * self.check_stale_peers.capacity()
-            // 1 word for every item in `want_rollback_merge_peers`
-            + 8 * self.want_rollback_merge_peers.capacity()
-            // Ignore more heap content in `raft::eraftpb::Message`.
-            + (self.unpersisted_message_count
+                // 2 words for every item in `peers_start_pending_time`.
+                + 16 * self.peers_start_pending_time.capacity()
+                // 1 word for every item in `down_peer_ids`
+                + 8 * self.down_peer_ids.capacity()
+                + mem::size_of::<metapb::Peer>() * self.check_stale_peers.capacity()
+                // 1 word for every item in `want_rollback_merge_peers`
+                + 8 * self.want_rollback_merge_peers.capacity()
+                // Ignore more heap content in `raft::eraftpb::Message`.
+                + (self.unpersisted_message_count
                 + self.apply_snap_ctx.as_ref().map_or(0, |ctx| ctx.msgs.len()))
                 * mem::size_of::<eraftpb::Message>()
-            + mem::size_of_val(self.pending_request_snapshot_count.as_ref())
+                + mem::size_of_val(self.pending_request_snapshot_count.as_ref())
         }
     }
 }

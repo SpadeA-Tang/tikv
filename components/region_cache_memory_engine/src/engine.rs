@@ -278,6 +278,7 @@ impl RangeCacheMemoryEngine {
             return RangeCacheStatus::Cached;
         }
 
+        let mut overlapped = false;
         // check whether the range is in pending_range and we can schedule load task if
         // it is
         if let Some((idx, (left_range, right_range))) = range_manager
@@ -286,13 +287,23 @@ impl RangeCacheMemoryEngine {
             .enumerate()
             .find_map(|(idx, r)| {
                 if r.contains_range(range) {
+                    info!(
+                        "prepare_for_apply: split met";
+                        "range" => ?range,
+                        "pending_range" => ?r,
+                    );
                     // The `range` may be a proper subset of `r` and we should split it in this case
                     // and push the rest back to `pending_range` so that each range only schedules
                     // load task of its own.
                     Some((idx, r.split_off(range)))
                 } else if range.contains_range(r) {
                     // todo(SpadeA): merge occurs
-                    unimplemented!()
+                    info!("range contains r which is unexpected";
+                        "range" => ?range,
+                        "pending_range" => ?r,
+                    );
+                    overlapped = true;
+                    Some((idx, (None, None)))
                 } else {
                     None
                 }
@@ -300,12 +311,25 @@ impl RangeCacheMemoryEngine {
         {
             let mut core = RwLockUpgradableReadGuard::upgrade(core);
 
+            if overlapped {
+                core.mut_range_manager().pending_ranges.swap_remove(idx);
+                return RangeCacheStatus::NotInCache;
+            }
+
             let range_manager = core.mut_range_manager();
             if let Some(left_range) = left_range {
+                info!(
+                    "prepare_for_apply: Append to pending due to split";
+                    "range" => ?left_range,
+                );
                 range_manager.pending_ranges.push(left_range);
             }
 
             if let Some(right_range) = right_range {
+                info!(
+                    "prepare_for_apply: Append to pending due to split";
+                    "range" => ?right_range,
+                );
                 range_manager.pending_ranges.push(right_range);
             }
 
@@ -317,6 +341,12 @@ impl RangeCacheMemoryEngine {
             range_manager
                 .pending_ranges_loading_data
                 .push_back((range.clone(), rocks_snap, false));
+            info!(
+                "prepare_for_apply: Range to load";
+                "range" => ?range,
+                "Cached" => range_manager.ranges().len(),
+                "Pending" => range_manager.pending_ranges_loading_data.len(),
+            );
             if let Err(e) = self
                 .bg_worker_manager()
                 .schedule_task(BackgroundTask::LoadRange)
