@@ -336,32 +336,11 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
                     return Ok(false);
                 }
                 let key_commit_ts = Key::decode_ts_from(current_key)?;
-
-                if PRINTF_LOG.load(atomic::Ordering::Relaxed) {
-                    info!(
-                        "on move_write_cursor_to_ts";
-                        "user_key" => log_wrappers::hex_encode_upper(user_key.as_encoded().as_slice()),
-                        "current_key" => log_wrappers::hex_encode_upper(current_key),
-                        "scanner_ts" => self.cfg.ts,
-                        "current_key_commit_ts" => key_commit_ts,
-                        "range_cache_engine" => self.range_cache_snap,
-                    );
-                }
-
                 if key_commit_ts <= self.cfg.ts {
                     // Founded, don't need to seek again.
                     return Ok(true);
                 } else if self.met_newer_ts_data == NewerTsCheckState::NotMetYet {
                     self.met_newer_ts_data = NewerTsCheckState::Met;
-                }
-
-                if PRINTF_LOG.load(atomic::Ordering::Relaxed) {
-                    info!(
-                        "met version larger than start_ts";
-                        "key" => log_wrappers::Value(current_key),
-                        "commit_ts" => key_commit_ts,
-                        "read_start_ts" => self.cfg.ts,
-                    );
                 }
 
                 // Report error if there's a more recent version if the isolation level is
@@ -384,15 +363,6 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
         self.statistics.write.over_seek_bound += 1;
 
         let seek_key = user_key.clone().append_ts(self.cfg.ts);
-        if PRINTF_LOG.load(atomic::Ordering::Relaxed) {
-            info!(
-                "on move_write_cursor_to_ts for seek";
-                "seek_key" => log_wrappers::hex_encode_upper(seek_key.as_encoded().as_slice()),
-                "user_key" => log_wrappers::hex_encode_upper(user_key.as_encoded().as_slice()),
-                "scanner_ts" => self.cfg.ts,
-                "range_cache_engine" => self.range_cache_snap,
-            );
-        }
 
         // `user_key` must have reserved space here, so its clone has reserved space
         // too. So no reallocation happens in `append_ts`.
@@ -483,17 +453,6 @@ impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
 
             let current_key = cursors.write.key(&mut statistics.write);
             let key_commit_ts = Key::decode_ts_from(current_key)?;
-            if PRINTF_LOG.load(atomic::Ordering::Relaxed) {
-                info!(
-                    "on handle_write";
-                    "user_key" => log_wrappers::hex_encode_upper(current_user_key.as_encoded().as_slice()),
-                    "current_key" => log_wrappers::hex_encode_upper(current_key),
-                    "scanner_ts" => cfg.ts,
-                    "current_key_commit_ts" => key_commit_ts,
-                    "write" => ?write,
-                    "write_val" => log_wrappers::hex_encode_upper(val),
-                );
-            }
 
             match write.write_type {
                 WriteType::Put => {

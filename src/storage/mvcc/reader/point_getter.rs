@@ -178,15 +178,6 @@ impl<S: Snapshot> PointGetter<S> {
             if let Some(lock) = self.load_and_check_lock(user_key)? {
                 let lock_clone = lock.clone();
                 let data = self.load_data_from_lock(user_key, lock);
-                if PRINTF_LOG.load(Ordering::Relaxed) {
-                    info!("*** point getter with access lock";
-                        "start_ts" => self.ts,
-                        "lock" => ?lock_clone,
-                        "access_locks" => ?&self.access_locks,
-                        "key" => %user_key,
-                        "data" => ?&data,
-                    );
-                }
                 return data;
             }
         }
@@ -221,30 +212,10 @@ impl<S: Snapshot> PointGetter<S> {
             ) {
                 self.statistics.lock.processed_keys += 1;
                 if self.access_locks.contains(lock.ts) {
-                    if PRINTF_LOG.load(Ordering::Relaxed) {
-                        info!("*** getter with access lock return lock";
-                            "lock" => ?&lock,
-                            "start_ts" => self.ts,
-                            "access" => ?self.access_locks,
-                            "key" => %user_key,
-                            "lock_ts" => lock.ts,
-                            "seqno" => seqno,
-                        );
-                    }
                     return Ok(Some(lock));
                 }
                 Err(e.into())
             } else {
-                if self.bypass_locks.contains(lock.ts) {
-                    if PRINTF_LOG.load(Ordering::Relaxed) {
-                        info!("*** getter with bypass lock return None";
-                            "start_ts" => self.ts,
-                            "bypass_locks" => ?self.bypass_locks,
-                            "key" => %user_key,
-                            "lock_ts" => lock.ts,
-                        );
-                    }
-                }
                 Ok(None)
             }
         } else {

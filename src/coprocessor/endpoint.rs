@@ -463,10 +463,6 @@ impl<E: Engine> Endpoint<E> {
             return Err(Error::Region(err));
         }
 
-        if PRINTF_LOG.load(Ordering::Relaxed) {
-            info!("cop handle_unary_request_impl snapshot got"; "req_ctx" => ?tracker.req_ctx, "range_cache_snap" => snapshot.ext().range_cache_engine_snap());
-        }
-
         // When snapshot is retrieved, deadline may exceed.
         tracker.on_snapshot_finished();
         tracker.req_ctx.deadline.check()?;
@@ -505,10 +501,6 @@ impl<E: Engine> Endpoint<E> {
         tracker.collect_storage_statistics(storage_stats);
         let (exec_details, exec_details_v2) = tracker.get_exec_details();
         tracker.on_finish_all_items();
-
-        if PRINTF_LOG.load(Ordering::Relaxed) {
-            info!("cop handle finish"; "return_rows" => exec_summary.num_produced_rows,  "req_ctx" => ?tracker.req_ctx);
-        }
 
         let mut resp = match result {
             Ok(resp) => {
