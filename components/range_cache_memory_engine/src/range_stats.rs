@@ -45,6 +45,9 @@ pub(crate) struct RangeStatsManager {
     mvcc_amplification_threshold: usize,
 
     mvcc_amplification_record: Arc<Mutex<HashMap<u64, f64>>>,
+
+    load_evict_interval: Duration,
+    last_load_evict_time: Arc<Mutex<Instant>>,
 }
 
 impl RangeStatsManager {
@@ -60,10 +63,11 @@ impl RangeStatsManager {
         evict_min_duration: Duration,
         expected_region_size: usize,
         mvcc_amplification_threshold: usize,
+        load_evict_interval: Duration,
         info_provider: Arc<dyn RegionInfoProvider>,
     ) -> Self {
         RangeStatsManager {
-            num_regions: Arc::new(AtomicUsize::new(num_regions)),
+            num_regions: Arc::new(AtomicUsize::new(0)),
             info_provider,
             checking_top_regions: Arc::new(AtomicBool::new(false)),
             region_loaded_at: Arc::new(ShardedLock::new(BTreeMap::new())),
@@ -72,12 +76,32 @@ impl RangeStatsManager {
             evict_min_duration,
             expected_region_size,
             mvcc_amplification_threshold,
+            load_evict_interval,
+            last_load_evict_time: Arc::new(Mutex::new(Instant::now())),
         }
+    }
+
+    /// If false is returned, it is not ready to check.
+    pub fn ready_for_auto_load_and_evict(&self) -> bool {
+        // The auto load and evict process can block for some time (mainly waiting for
+        // eviction). To avoid too check after check immediately, we check the elapsed
+        // time after the last check.
+        // Region stats update duration is one minute by default, to avoid two checks
+        // using the same region stats as much as possible, we set a min check interval
+        // of 1.5 minutes(considers there are not just one region for stat collection).
+        self.last_load_evict_time.lock().elapsed()
+            <= Duration::max(self.load_evict_interval / 2, Duration::from_secs(90))
+            && self.set_checking_top_regions(true)
+    }
+
+    pub fn complete_auto_load_and_evict(&self) {
+        *self.last_load_evict_time.lock() = Instant::now();
+        self.set_checking_top_regions(true);
     }
 
     /// Prevents two instances of this from running concurrently.
     /// Return the previous checking status.
-    pub fn set_checking_top_regions(&self, v: bool) -> bool {
+    fn set_checking_top_regions(&self, v: bool) -> bool {
         self.checking_top_regions.swap(v, Ordering::Relaxed)
     }
 
@@ -200,10 +224,13 @@ impl RangeStatsManager {
             "ma_mvcc_amplification_reduction" => ma_mvcc_amplification_reduction,
         );
 
-        info!("ime collect_changed_ranges"; "num_regions" => self.max_num_regions());
+        let expected_num_regions = cached_region_ids.len()
+            + (memory_controller.soft_limit_threshold() - memory_controller.mem_usage())
+                / self.expected_region_size;
+        info!("ime collect_changed_ranges"; "num_regions" => expected_num_regions);
         let curr_top_regions = self
             .info_provider
-            .get_top_regions(Some(NonZeroUsize::try_from(self.max_num_regions()).unwrap()))
+            .get_top_regions(Some(NonZeroUsize::try_from(expected_num_regions).unwrap()))
             .unwrap() // TODO (afeinberg): Potentially custom error handling here.
             .iter()
             .map(|(r, region_stats)| (r.id, (r.clone(), region_stats.clone())))
