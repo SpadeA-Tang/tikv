@@ -618,14 +618,16 @@ impl BackgroundRunnerCore {
         let curr_memory_usage = self.memory_controller.mem_usage();
         let threshold = self.memory_controller.stop_load_limit_threshold();
 
-        let cached_regions = self
-            .engine
-            .region_manager()
-            .regions_map()
-            .read()
-            .cached_regions();
+        let (current_region_count, cached_regions) = {
+            let region_map = self.engine.region_manager().regions_map().read();
+            (region_map.regions().len(), region_map.cached_regions())
+        };
         let (regions_to_load, regions_to_evict) = range_stats_manager
-            .collect_regions_to_load_and_evict(cached_regions, &self.memory_controller);
+            .collect_regions_to_load_and_evict(
+                current_region_count,
+                cached_regions,
+                &self.memory_controller,
+            );
 
         let mut regions_to_delete = Vec::with_capacity(regions_to_evict.len());
         info!("ime load_evict"; "regions_to_load" => ?&regions_to_load, "regions_to_evict" => ?&regions_to_evict);

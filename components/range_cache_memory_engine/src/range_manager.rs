@@ -858,9 +858,9 @@ impl RegionManager {
                 );
             }
         }
-        for cb in cbs {
+        rt.block_on(for cb in cbs {
             rt.block_on(async { cb().await });
-        }
+        });
     }
 
     // return whether the operation is successful.

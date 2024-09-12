@@ -186,6 +186,7 @@ impl RangeStatsManager {
     /// (Regions to load, Regions to evict)
     pub fn collect_regions_to_load_and_evict(
         &self,
+        current_region_count: usize,
         cached_region_ids: Vec<u64>,
         memory_controller: &MemoryController,
     ) -> (Vec<Region>, Vec<Region>) {
@@ -224,7 +225,7 @@ impl RangeStatsManager {
             "ma_mvcc_amplification_reduction" => ma_mvcc_amplification_reduction,
         );
 
-        let expected_num_regions = cached_region_ids.len()
+        let expected_num_regions = current_region_count
             + (memory_controller.soft_limit_threshold() - memory_controller.mem_usage())
                 / self.expected_region_size;
         info!("ime collect_changed_ranges"; "num_regions" => expected_num_regions);
