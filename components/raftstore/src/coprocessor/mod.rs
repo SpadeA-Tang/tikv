@@ -43,6 +43,7 @@ pub use self::{
         StoreHandle,
     },
     error::{Error, Result},
+    metrics::REGION_SIZE_HISTOGRAM,
     read_write::{
         ObservableWriteBatch, ObservedSnapshot, SnapshotObserver, WriteBatchObserver,
         WriteBatchWrapper,

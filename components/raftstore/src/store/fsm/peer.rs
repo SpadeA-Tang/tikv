@@ -73,7 +73,7 @@ use super::life::forward_destroy_to_source_peer;
 #[cfg(any(test, feature = "testexport"))]
 use crate::store::PeerInternalStat;
 use crate::{
-    coprocessor::{RegionChangeEvent, RegionChangeReason},
+    coprocessor::{RegionChangeEvent, RegionChangeReason, REGION_SIZE_HISTOGRAM},
     store::{
         cmd_resp::{bind_term, new_error},
         demote_failed_voters_request,
@@ -6219,6 +6219,14 @@ where
         if !self.fsm.peer.is_leader() {
             return;
         }
+
+        REGION_SIZE_HISTOGRAM.observe(
+            self.fsm
+                .peer
+                .split_check_trigger
+                .approximate_size
+                .unwrap_or(0) as f64,
+        );
 
         // When restart, the may_skip_split_check will be false. The split check will
         // first check the region size, and then check whether the region should split.

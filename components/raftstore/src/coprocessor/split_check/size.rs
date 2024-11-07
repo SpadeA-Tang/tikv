@@ -7,8 +7,7 @@ use tikv_util::{box_try, debug, info, warn};
 
 use super::{
     super::{
-        error::Result, metrics::*, Coprocessor, KeyEntry, ObserverContext, SplitCheckObserver,
-        SplitChecker,
+        error::Result, Coprocessor, KeyEntry, ObserverContext, SplitCheckObserver, SplitChecker,
     },
     calc_split_keys_count, Host,
 };
@@ -164,7 +163,6 @@ impl<C: StoreHandle, E: KvEngine> SplitCheckObserver<E> for SizeCheckObserver<C>
         let need_split_region = region_size >= host.cfg.region_max_size().0;
         let need_bucket_checker =
             host.cfg.enable_region_bucket() && region_size >= 2 * host.cfg.region_bucket_size.0;
-        REGION_SIZE_HISTOGRAM.observe(region_size as f64);
 
         if need_split_region || need_bucket_checker {
             // when it's a large region use approximate way to produce split keys
